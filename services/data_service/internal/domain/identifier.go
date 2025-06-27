@@ -1,4 +1,4 @@
-package identifier
+package domain
 
 type Identifier struct {
 	Provider string

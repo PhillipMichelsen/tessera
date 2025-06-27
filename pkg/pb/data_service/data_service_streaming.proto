@@ -1,0 +1,53 @@
+syntax = "proto3";
+
+package data_service;
+
+option go_package = "gitlab.michelsen.id/phillmichelsen/tessera/pkg/pb/data_service;data_service";
+
+service DataServiceStreaming {
+  rpc StartStream(StartStreamRequest) returns (StartStreamResponse);
+  rpc UpdateStream(UpdateStreamRequest) returns (UpdateStreamResponse);
+  rpc StopStream(StopStreamRequest) returns (StopStreamResponse);
+
+  rpc ConnectStream(ConnectStreamRequest) returns (stream Message);
+}
+
+message Identifier {
+  string provider = 1; // e.g., "binance"
+  string subject = 2; // e.g., "BTCUSDT"
+}
+
+message Message {
+  Identifier identifier = 1;
+  string payload = 2; // JSON-encoded data
+}
+
+message StartStreamRequest {
+  repeated Identifier identifiers = 1;
+}
+
+message StartStreamResponse {
+  string stream_uuid = 1;
+}
+
+message UpdateStreamRequest {
+  string stream_uuid = 1;
+  repeated Identifier identifiers = 2;
+}
+
+message UpdateStreamResponse {
+  bool success = 1;
+}
+
+message StopStreamRequest {
+  string stream_uuid = 1;
+}
+
+message StopStreamResponse {
+  bool success = 1;
+}
+
+
+message ConnectStreamRequest {
+  string stream_uuid = 1;
+}
