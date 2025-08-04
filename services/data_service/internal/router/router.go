@@ -34,7 +34,7 @@ func (r *Router) Run() {
 			select {
 			case ch <- msg:
 			default:
-				fmt.Println("Dropped message, buffer full!!!")
+				fmt.Println("Dropped message, buffer full!!!") // TODO: Handle full buffer case more gracefully
 			}
 		}
 		r.mu.RUnlock()

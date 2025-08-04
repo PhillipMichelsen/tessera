@@ -21,11 +21,9 @@ func main() {
 
 	// gRPC Server
 	grpcServer := grpc.NewServer()
-	streamingServer := server.NewGRPCStreamingServer(m)
-	pb.RegisterDataServiceStreamingServer(grpcServer, streamingServer)
-	reflection.Register(grpcServer)
-
 	go func() {
+		pb.RegisterDataServiceStreamingServer(grpcServer, server.NewGRPCStreamingServer(m))
+		reflection.Register(grpcServer)
 		grpcLis, err := net.Listen("tcp", ":50051")
 		if err != nil {
 			log.Fatalf("Failed to listen for gRPC: %v", err)
