@@ -1,11 +1,10 @@
 package server
 
 import (
-	"context"
 	"fmt"
+
 	"github.com/google/uuid"
 	pb "gitlab.michelsen.id/phillmichelsen/tessera/pkg/pb/data_service"
-	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/domain"
 	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/manager"
 )
 
@@ -18,23 +17,6 @@ func NewGRPCStreamingServer(m *manager.Manager) *GRPCStreamingServer {
 	return &GRPCStreamingServer{
 		manager: m,
 	}
-}
-
-func (s *GRPCStreamingServer) StartStream(ctx context.Context, req *pb.StartStreamRequest) (*pb.StartStreamResponse, error) {
-	var ids []domain.Identifier
-	for _, id := range req.Identifiers {
-		ids = append(ids, domain.Identifier{
-			Provider: id.Provider,
-			Subject:  id.Subject,
-		})
-	}
-
-	streamID, err := s.manager.StartStream(ids)
-	if err != nil {
-		return nil, fmt.Errorf("failed to start stream: %w", err)
-	}
-
-	return &pb.StartStreamResponse{StreamUuid: streamID.String()}, nil
 }
 
 func (s *GRPCStreamingServer) ConnectStream(req *pb.ConnectStreamRequest, stream pb.DataServiceStreaming_ConnectStreamServer) error {
@@ -63,7 +45,7 @@ func (s *GRPCStreamingServer) ConnectStream(req *pb.ConnectStreamRequest, stream
 					Provider: msg.Identifier.Provider,
 					Subject:  msg.Identifier.Subject,
 				},
-				Payload: fmt.Sprintf("%s", msg.Payload),
+				Payload: fmt.Sprintf("%v", msg.Payload),
 			})
 
 			if err != nil {

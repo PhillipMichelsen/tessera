@@ -4,14 +4,17 @@ package data_service;
 
 option go_package = "gitlab.michelsen.id/phillmichelsen/tessera/pkg/pb/data_service;data_service";
 
-service DataServiceStreaming {
+service DataServiceControl {
   rpc StartStream(StartStreamRequest) returns (StartStreamResponse);
-  rpc UpdateStream(UpdateStreamRequest) returns (UpdateStreamResponse);
   rpc StopStream(StopStreamRequest) returns (StopStreamResponse);
+  rpc ConfigureStream(ConfigureStreamRequest) returns (ConfigureStreamResponse);
+}
 
+service DataServiceStreaming {
   rpc ConnectStream(ConnectStreamRequest) returns (stream Message);
 }
 
+// Domain Models
 message Identifier {
   string provider = 1; // e.g., "binance"
   string subject = 2; // e.g., "BTCUSDT"
@@ -22,32 +25,27 @@ message Message {
   string payload = 2; // JSON-encoded data
 }
 
-message StartStreamRequest {
-  repeated Identifier identifiers = 1;
-}
+// Control Requests and Responses
+message StartStreamRequest {}
 
 message StartStreamResponse {
   string stream_uuid = 1;
 }
 
-message UpdateStreamRequest {
+message ConfigureStreamRequest {
   string stream_uuid = 1;
   repeated Identifier identifiers = 2;
 }
 
-message UpdateStreamResponse {
-  bool success = 1;
-}
+message ConfigureStreamResponse {}
 
 message StopStreamRequest {
   string stream_uuid = 1;
 }
 
-message StopStreamResponse {
-  bool success = 1;
-}
+message StopStreamResponse {}
 
-
+// Stream Requests and Responses
 message ConnectStreamRequest {
   string stream_uuid = 1;
 }

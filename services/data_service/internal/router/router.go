@@ -2,9 +2,9 @@ package router
 
 import (
 	"fmt"
-	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/domain"
 	"sync"
-	"time"
+
+	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/domain"
 )
 
 type Router struct {
@@ -15,7 +15,7 @@ type Router struct {
 
 func NewRouter() *Router {
 	return &Router{
-		incoming: make(chan domain.Message, 64), // Buffered channel for incoming messages
+		incoming: make(chan domain.Message, 512), // Buffered channel for incoming messages
 		routes:   make(map[domain.Identifier][]chan<- domain.Message),
 	}
 }
@@ -26,7 +26,6 @@ func (r *Router) IncomingChannel() chan<- domain.Message {
 
 func (r *Router) Run() {
 	for msg := range r.incoming {
-		startTime := time.Now()
 		r.mu.RLock()
 		channels := r.routes[msg.Identifier]
 
@@ -38,7 +37,6 @@ func (r *Router) Run() {
 			}
 		}
 		r.mu.RUnlock()
-		fmt.Printf("Message routed to %d channels in %v\n", len(channels), time.Since(startTime))
 	}
 }
 

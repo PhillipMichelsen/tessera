@@ -2,7 +2,7 @@
 // versions:
 // 	protoc-gen-go v1.36.6
 // 	protoc        v6.31.1
-// source: pkg/pb/data_service/data_service_streaming.proto
+// source: pkg/pb/data_service/data_service.proto
 
 package data_service
 
@@ -21,6 +21,7 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// Domain Models
 type Identifier struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Provider      string                 `protobuf:"bytes,1,opt,name=provider,proto3" json:"provider,omitempty"` // e.g., "binance"
@@ -31,7 +32,7 @@ type Identifier struct {
 
 func (x *Identifier) Reset() {
 	*x = Identifier{}
-	mi := &file_pkg_pb_data_service_data_service_streaming_proto_msgTypes[0]
+	mi := &file_pkg_pb_data_service_data_service_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -43,7 +44,7 @@ func (x *Identifier) String() string {
 func (*Identifier) ProtoMessage() {}
 
 func (x *Identifier) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_pb_data_service_data_service_streaming_proto_msgTypes[0]
+	mi := &file_pkg_pb_data_service_data_service_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -56,7 +57,7 @@ func (x *Identifier) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Identifier.ProtoReflect.Descriptor instead.
 func (*Identifier) Descriptor() ([]byte, []int) {
-	return file_pkg_pb_data_service_data_service_streaming_proto_rawDescGZIP(), []int{0}
+	return file_pkg_pb_data_service_data_service_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *Identifier) GetProvider() string {
@@ -83,7 +84,7 @@ type Message struct {
 
 func (x *Message) Reset() {
 	*x = Message{}
-	mi := &file_pkg_pb_data_service_data_service_streaming_proto_msgTypes[1]
+	mi := &file_pkg_pb_data_service_data_service_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -95,7 +96,7 @@ func (x *Message) String() string {
 func (*Message) ProtoMessage() {}
 
 func (x *Message) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_pb_data_service_data_service_streaming_proto_msgTypes[1]
+	mi := &file_pkg_pb_data_service_data_service_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -108,7 +109,7 @@ func (x *Message) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Message.ProtoReflect.Descriptor instead.
 func (*Message) Descriptor() ([]byte, []int) {
-	return file_pkg_pb_data_service_data_service_streaming_proto_rawDescGZIP(), []int{1}
+	return file_pkg_pb_data_service_data_service_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *Message) GetIdentifier() *Identifier {
@@ -125,16 +126,16 @@ func (x *Message) GetPayload() string {
 	return ""
 }
 
+// Control Requests and Responses
 type StartStreamRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Identifiers   []*Identifier          `protobuf:"bytes,1,rep,name=identifiers,proto3" json:"identifiers,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *StartStreamRequest) Reset() {
 	*x = StartStreamRequest{}
-	mi := &file_pkg_pb_data_service_data_service_streaming_proto_msgTypes[2]
+	mi := &file_pkg_pb_data_service_data_service_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -146,7 +147,7 @@ func (x *StartStreamRequest) String() string {
 func (*StartStreamRequest) ProtoMessage() {}
 
 func (x *StartStreamRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_pb_data_service_data_service_streaming_proto_msgTypes[2]
+	mi := &file_pkg_pb_data_service_data_service_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -159,14 +160,7 @@ func (x *StartStreamRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartStreamRequest.ProtoReflect.Descriptor instead.
 func (*StartStreamRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_pb_data_service_data_service_streaming_proto_rawDescGZIP(), []int{2}
-}
-
-func (x *StartStreamRequest) GetIdentifiers() []*Identifier {
-	if x != nil {
-		return x.Identifiers
-	}
-	return nil
+	return file_pkg_pb_data_service_data_service_proto_rawDescGZIP(), []int{2}
 }
 
 type StartStreamResponse struct {
@@ -178,7 +172,7 @@ type StartStreamResponse struct {
 
 func (x *StartStreamResponse) Reset() {
 	*x = StartStreamResponse{}
-	mi := &file_pkg_pb_data_service_data_service_streaming_proto_msgTypes[3]
+	mi := &file_pkg_pb_data_service_data_service_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -190,7 +184,7 @@ func (x *StartStreamResponse) String() string {
 func (*StartStreamResponse) ProtoMessage() {}
 
 func (x *StartStreamResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_pb_data_service_data_service_streaming_proto_msgTypes[3]
+	mi := &file_pkg_pb_data_service_data_service_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -203,7 +197,7 @@ func (x *StartStreamResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartStreamResponse.ProtoReflect.Descriptor instead.
 func (*StartStreamResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_pb_data_service_data_service_streaming_proto_rawDescGZIP(), []int{3}
+	return file_pkg_pb_data_service_data_service_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *StartStreamResponse) GetStreamUuid() string {
@@ -213,7 +207,7 @@ func (x *StartStreamResponse) GetStreamUuid() string {
 	return ""
 }
 
-type UpdateStreamRequest struct {
+type ConfigureStreamRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	StreamUuid    string                 `protobuf:"bytes,1,opt,name=stream_uuid,json=streamUuid,proto3" json:"stream_uuid,omitempty"`
 	Identifiers   []*Identifier          `protobuf:"bytes,2,rep,name=identifiers,proto3" json:"identifiers,omitempty"`
@@ -221,21 +215,21 @@ type UpdateStreamRequest struct {
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *UpdateStreamRequest) Reset() {
-	*x = UpdateStreamRequest{}
-	mi := &file_pkg_pb_data_service_data_service_streaming_proto_msgTypes[4]
+func (x *ConfigureStreamRequest) Reset() {
+	*x = ConfigureStreamRequest{}
+	mi := &file_pkg_pb_data_service_data_service_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *UpdateStreamRequest) String() string {
+func (x *ConfigureStreamRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*UpdateStreamRequest) ProtoMessage() {}
+func (*ConfigureStreamRequest) ProtoMessage() {}
 
-func (x *UpdateStreamRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_pb_data_service_data_service_streaming_proto_msgTypes[4]
+func (x *ConfigureStreamRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_pb_data_service_data_service_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -246,47 +240,46 @@ func (x *UpdateStreamRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use UpdateStreamRequest.ProtoReflect.Descriptor instead.
-func (*UpdateStreamRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_pb_data_service_data_service_streaming_proto_rawDescGZIP(), []int{4}
+// Deprecated: Use ConfigureStreamRequest.ProtoReflect.Descriptor instead.
+func (*ConfigureStreamRequest) Descriptor() ([]byte, []int) {
+	return file_pkg_pb_data_service_data_service_proto_rawDescGZIP(), []int{4}
 }
 
-func (x *UpdateStreamRequest) GetStreamUuid() string {
+func (x *ConfigureStreamRequest) GetStreamUuid() string {
 	if x != nil {
 		return x.StreamUuid
 	}
 	return ""
 }
 
-func (x *UpdateStreamRequest) GetIdentifiers() []*Identifier {
+func (x *ConfigureStreamRequest) GetIdentifiers() []*Identifier {
 	if x != nil {
 		return x.Identifiers
 	}
 	return nil
 }
 
-type UpdateStreamResponse struct {
+type ConfigureStreamResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *UpdateStreamResponse) Reset() {
-	*x = UpdateStreamResponse{}
-	mi := &file_pkg_pb_data_service_data_service_streaming_proto_msgTypes[5]
+func (x *ConfigureStreamResponse) Reset() {
+	*x = ConfigureStreamResponse{}
+	mi := &file_pkg_pb_data_service_data_service_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *UpdateStreamResponse) String() string {
+func (x *ConfigureStreamResponse) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*UpdateStreamResponse) ProtoMessage() {}
+func (*ConfigureStreamResponse) ProtoMessage() {}
 
-func (x *UpdateStreamResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_pb_data_service_data_service_streaming_proto_msgTypes[5]
+func (x *ConfigureStreamResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_pb_data_service_data_service_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -297,16 +290,9 @@ func (x *UpdateStreamResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use UpdateStreamResponse.ProtoReflect.Descriptor instead.
-func (*UpdateStreamResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_pb_data_service_data_service_streaming_proto_rawDescGZIP(), []int{5}
-}
-
-func (x *UpdateStreamResponse) GetSuccess() bool {
-	if x != nil {
-		return x.Success
-	}
-	return false
+// Deprecated: Use ConfigureStreamResponse.ProtoReflect.Descriptor instead.
+func (*ConfigureStreamResponse) Descriptor() ([]byte, []int) {
+	return file_pkg_pb_data_service_data_service_proto_rawDescGZIP(), []int{5}
 }
 
 type StopStreamRequest struct {
@@ -318,7 +304,7 @@ type StopStreamRequest struct {
 
 func (x *StopStreamRequest) Reset() {
 	*x = StopStreamRequest{}
-	mi := &file_pkg_pb_data_service_data_service_streaming_proto_msgTypes[6]
+	mi := &file_pkg_pb_data_service_data_service_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -330,7 +316,7 @@ func (x *StopStreamRequest) String() string {
 func (*StopStreamRequest) ProtoMessage() {}
 
 func (x *StopStreamRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_pb_data_service_data_service_streaming_proto_msgTypes[6]
+	mi := &file_pkg_pb_data_service_data_service_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -343,7 +329,7 @@ func (x *StopStreamRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StopStreamRequest.ProtoReflect.Descriptor instead.
 func (*StopStreamRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_pb_data_service_data_service_streaming_proto_rawDescGZIP(), []int{6}
+	return file_pkg_pb_data_service_data_service_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *StopStreamRequest) GetStreamUuid() string {
@@ -355,14 +341,13 @@ func (x *StopStreamRequest) GetStreamUuid() string {
 
 type StopStreamResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *StopStreamResponse) Reset() {
 	*x = StopStreamResponse{}
-	mi := &file_pkg_pb_data_service_data_service_streaming_proto_msgTypes[7]
+	mi := &file_pkg_pb_data_service_data_service_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -374,7 +359,7 @@ func (x *StopStreamResponse) String() string {
 func (*StopStreamResponse) ProtoMessage() {}
 
 func (x *StopStreamResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_pb_data_service_data_service_streaming_proto_msgTypes[7]
+	mi := &file_pkg_pb_data_service_data_service_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -387,16 +372,10 @@ func (x *StopStreamResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StopStreamResponse.ProtoReflect.Descriptor instead.
 func (*StopStreamResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_pb_data_service_data_service_streaming_proto_rawDescGZIP(), []int{7}
+	return file_pkg_pb_data_service_data_service_proto_rawDescGZIP(), []int{7}
 }
 
-func (x *StopStreamResponse) GetSuccess() bool {
-	if x != nil {
-		return x.Success
-	}
-	return false
-}
-
+// Stream Requests and Responses
 type ConnectStreamRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	StreamUuid    string                 `protobuf:"bytes,1,opt,name=stream_uuid,json=streamUuid,proto3" json:"stream_uuid,omitempty"`
@@ -406,7 +385,7 @@ type ConnectStreamRequest struct {
 
 func (x *ConnectStreamRequest) Reset() {
 	*x = ConnectStreamRequest{}
-	mi := &file_pkg_pb_data_service_data_service_streaming_proto_msgTypes[8]
+	mi := &file_pkg_pb_data_service_data_service_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -418,7 +397,7 @@ func (x *ConnectStreamRequest) String() string {
 func (*ConnectStreamRequest) ProtoMessage() {}
 
 func (x *ConnectStreamRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_pb_data_service_data_service_streaming_proto_msgTypes[8]
+	mi := &file_pkg_pb_data_service_data_service_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -431,7 +410,7 @@ func (x *ConnectStreamRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConnectStreamRequest.ProtoReflect.Descriptor instead.
 func (*ConnectStreamRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_pb_data_service_data_service_streaming_proto_rawDescGZIP(), []int{8}
+	return file_pkg_pb_data_service_data_service_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *ConnectStreamRequest) GetStreamUuid() string {
@@ -441,11 +420,11 @@ func (x *ConnectStreamRequest) GetStreamUuid() string {
 	return ""
 }
 
-var File_pkg_pb_data_service_data_service_streaming_proto protoreflect.FileDescriptor
+var File_pkg_pb_data_service_data_service_proto protoreflect.FileDescriptor
 
-const file_pkg_pb_data_service_data_service_streaming_proto_rawDesc = "" +
+const file_pkg_pb_data_service_data_service_proto_rawDesc = "" +
 	"\n" +
-	"0pkg/pb/data_service/data_service_streaming.proto\x12\fdata_service\"B\n" +
+	"&pkg/pb/data_service/data_service.proto\x12\fdata_service\"B\n" +
 	"\n" +
 	"Identifier\x12\x1a\n" +
 	"\bprovider\x18\x01 \x01(\tR\bprovider\x12\x18\n" +
@@ -454,96 +433,93 @@ const file_pkg_pb_data_service_data_service_streaming_proto_rawDesc = "" +
 	"\n" +
 	"identifier\x18\x01 \x01(\v2\x18.data_service.IdentifierR\n" +
 	"identifier\x12\x18\n" +
-	"\apayload\x18\x02 \x01(\tR\apayload\"P\n" +
-	"\x12StartStreamRequest\x12:\n" +
-	"\videntifiers\x18\x01 \x03(\v2\x18.data_service.IdentifierR\videntifiers\"6\n" +
+	"\apayload\x18\x02 \x01(\tR\apayload\"\x14\n" +
+	"\x12StartStreamRequest\"6\n" +
 	"\x13StartStreamResponse\x12\x1f\n" +
 	"\vstream_uuid\x18\x01 \x01(\tR\n" +
-	"streamUuid\"r\n" +
-	"\x13UpdateStreamRequest\x12\x1f\n" +
+	"streamUuid\"u\n" +
+	"\x16ConfigureStreamRequest\x12\x1f\n" +
 	"\vstream_uuid\x18\x01 \x01(\tR\n" +
 	"streamUuid\x12:\n" +
-	"\videntifiers\x18\x02 \x03(\v2\x18.data_service.IdentifierR\videntifiers\"0\n" +
-	"\x14UpdateStreamResponse\x12\x18\n" +
-	"\asuccess\x18\x01 \x01(\bR\asuccess\"4\n" +
+	"\videntifiers\x18\x02 \x03(\v2\x18.data_service.IdentifierR\videntifiers\"\x19\n" +
+	"\x17ConfigureStreamResponse\"4\n" +
 	"\x11StopStreamRequest\x12\x1f\n" +
 	"\vstream_uuid\x18\x01 \x01(\tR\n" +
-	"streamUuid\".\n" +
-	"\x12StopStreamResponse\x12\x18\n" +
-	"\asuccess\x18\x01 \x01(\bR\asuccess\"7\n" +
+	"streamUuid\"\x14\n" +
+	"\x12StopStreamResponse\"7\n" +
 	"\x14ConnectStreamRequest\x12\x1f\n" +
 	"\vstream_uuid\x18\x01 \x01(\tR\n" +
-	"streamUuid2\xe0\x02\n" +
-	"\x14DataServiceStreaming\x12R\n" +
-	"\vStartStream\x12 .data_service.StartStreamRequest\x1a!.data_service.StartStreamResponse\x12U\n" +
-	"\fUpdateStream\x12!.data_service.UpdateStreamRequest\x1a\".data_service.UpdateStreamResponse\x12O\n" +
+	"streamUuid2\x99\x02\n" +
+	"\x12DataServiceControl\x12R\n" +
+	"\vStartStream\x12 .data_service.StartStreamRequest\x1a!.data_service.StartStreamResponse\x12O\n" +
 	"\n" +
-	"StopStream\x12\x1f.data_service.StopStreamRequest\x1a .data_service.StopStreamResponse\x12L\n" +
+	"StopStream\x12\x1f.data_service.StopStreamRequest\x1a .data_service.StopStreamResponse\x12^\n" +
+	"\x0fConfigureStream\x12$.data_service.ConfigureStreamRequest\x1a%.data_service.ConfigureStreamResponse2d\n" +
+	"\x14DataServiceStreaming\x12L\n" +
 	"\rConnectStream\x12\".data_service.ConnectStreamRequest\x1a\x15.data_service.Message0\x01BMZKgitlab.michelsen.id/phillmichelsen/tessera/pkg/pb/data_service;data_serviceb\x06proto3"
 
 var (
-	file_pkg_pb_data_service_data_service_streaming_proto_rawDescOnce sync.Once
-	file_pkg_pb_data_service_data_service_streaming_proto_rawDescData []byte
+	file_pkg_pb_data_service_data_service_proto_rawDescOnce sync.Once
+	file_pkg_pb_data_service_data_service_proto_rawDescData []byte
 )
 
-func file_pkg_pb_data_service_data_service_streaming_proto_rawDescGZIP() []byte {
-	file_pkg_pb_data_service_data_service_streaming_proto_rawDescOnce.Do(func() {
-		file_pkg_pb_data_service_data_service_streaming_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_pkg_pb_data_service_data_service_streaming_proto_rawDesc), len(file_pkg_pb_data_service_data_service_streaming_proto_rawDesc)))
+func file_pkg_pb_data_service_data_service_proto_rawDescGZIP() []byte {
+	file_pkg_pb_data_service_data_service_proto_rawDescOnce.Do(func() {
+		file_pkg_pb_data_service_data_service_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_pkg_pb_data_service_data_service_proto_rawDesc), len(file_pkg_pb_data_service_data_service_proto_rawDesc)))
 	})
-	return file_pkg_pb_data_service_data_service_streaming_proto_rawDescData
+	return file_pkg_pb_data_service_data_service_proto_rawDescData
 }
 
-var file_pkg_pb_data_service_data_service_streaming_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
-var file_pkg_pb_data_service_data_service_streaming_proto_goTypes = []any{
-	(*Identifier)(nil),           // 0: data_service.Identifier
-	(*Message)(nil),              // 1: data_service.Message
-	(*StartStreamRequest)(nil),   // 2: data_service.StartStreamRequest
-	(*StartStreamResponse)(nil),  // 3: data_service.StartStreamResponse
-	(*UpdateStreamRequest)(nil),  // 4: data_service.UpdateStreamRequest
-	(*UpdateStreamResponse)(nil), // 5: data_service.UpdateStreamResponse
-	(*StopStreamRequest)(nil),    // 6: data_service.StopStreamRequest
-	(*StopStreamResponse)(nil),   // 7: data_service.StopStreamResponse
-	(*ConnectStreamRequest)(nil), // 8: data_service.ConnectStreamRequest
+var file_pkg_pb_data_service_data_service_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
+var file_pkg_pb_data_service_data_service_proto_goTypes = []any{
+	(*Identifier)(nil),              // 0: data_service.Identifier
+	(*Message)(nil),                 // 1: data_service.Message
+	(*StartStreamRequest)(nil),      // 2: data_service.StartStreamRequest
+	(*StartStreamResponse)(nil),     // 3: data_service.StartStreamResponse
+	(*ConfigureStreamRequest)(nil),  // 4: data_service.ConfigureStreamRequest
+	(*ConfigureStreamResponse)(nil), // 5: data_service.ConfigureStreamResponse
+	(*StopStreamRequest)(nil),       // 6: data_service.StopStreamRequest
+	(*StopStreamResponse)(nil),      // 7: data_service.StopStreamResponse
+	(*ConnectStreamRequest)(nil),    // 8: data_service.ConnectStreamRequest
 }
-var file_pkg_pb_data_service_data_service_streaming_proto_depIdxs = []int32{
+var file_pkg_pb_data_service_data_service_proto_depIdxs = []int32{
 	0, // 0: data_service.Message.identifier:type_name -> data_service.Identifier
-	0, // 1: data_service.StartStreamRequest.identifiers:type_name -> data_service.Identifier
-	0, // 2: data_service.UpdateStreamRequest.identifiers:type_name -> data_service.Identifier
-	2, // 3: data_service.DataServiceStreaming.StartStream:input_type -> data_service.StartStreamRequest
-	4, // 4: data_service.DataServiceStreaming.UpdateStream:input_type -> data_service.UpdateStreamRequest
-	6, // 5: data_service.DataServiceStreaming.StopStream:input_type -> data_service.StopStreamRequest
-	8, // 6: data_service.DataServiceStreaming.ConnectStream:input_type -> data_service.ConnectStreamRequest
-	3, // 7: data_service.DataServiceStreaming.StartStream:output_type -> data_service.StartStreamResponse
-	5, // 8: data_service.DataServiceStreaming.UpdateStream:output_type -> data_service.UpdateStreamResponse
-	7, // 9: data_service.DataServiceStreaming.StopStream:output_type -> data_service.StopStreamResponse
-	1, // 10: data_service.DataServiceStreaming.ConnectStream:output_type -> data_service.Message
-	7, // [7:11] is the sub-list for method output_type
-	3, // [3:7] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	0, // 1: data_service.ConfigureStreamRequest.identifiers:type_name -> data_service.Identifier
+	2, // 2: data_service.DataServiceControl.StartStream:input_type -> data_service.StartStreamRequest
+	6, // 3: data_service.DataServiceControl.StopStream:input_type -> data_service.StopStreamRequest
+	4, // 4: data_service.DataServiceControl.ConfigureStream:input_type -> data_service.ConfigureStreamRequest
+	8, // 5: data_service.DataServiceStreaming.ConnectStream:input_type -> data_service.ConnectStreamRequest
+	3, // 6: data_service.DataServiceControl.StartStream:output_type -> data_service.StartStreamResponse
+	7, // 7: data_service.DataServiceControl.StopStream:output_type -> data_service.StopStreamResponse
+	5, // 8: data_service.DataServiceControl.ConfigureStream:output_type -> data_service.ConfigureStreamResponse
+	1, // 9: data_service.DataServiceStreaming.ConnectStream:output_type -> data_service.Message
+	6, // [6:10] is the sub-list for method output_type
+	2, // [2:6] is the sub-list for method input_type
+	2, // [2:2] is the sub-list for extension type_name
+	2, // [2:2] is the sub-list for extension extendee
+	0, // [0:2] is the sub-list for field type_name
 }
 
-func init() { file_pkg_pb_data_service_data_service_streaming_proto_init() }
-func file_pkg_pb_data_service_data_service_streaming_proto_init() {
-	if File_pkg_pb_data_service_data_service_streaming_proto != nil {
+func init() { file_pkg_pb_data_service_data_service_proto_init() }
+func file_pkg_pb_data_service_data_service_proto_init() {
+	if File_pkg_pb_data_service_data_service_proto != nil {
 		return
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pkg_pb_data_service_data_service_streaming_proto_rawDesc), len(file_pkg_pb_data_service_data_service_streaming_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pkg_pb_data_service_data_service_proto_rawDesc), len(file_pkg_pb_data_service_data_service_proto_rawDesc)),
 			NumEnums:      0,
 			NumMessages:   9,
 			NumExtensions: 0,
-			NumServices:   1,
+			NumServices:   2,
 		},
-		GoTypes:           file_pkg_pb_data_service_data_service_streaming_proto_goTypes,
-		DependencyIndexes: file_pkg_pb_data_service_data_service_streaming_proto_depIdxs,
-		MessageInfos:      file_pkg_pb_data_service_data_service_streaming_proto_msgTypes,
+		GoTypes:           file_pkg_pb_data_service_data_service_proto_goTypes,
+		DependencyIndexes: file_pkg_pb_data_service_data_service_proto_depIdxs,
+		MessageInfos:      file_pkg_pb_data_service_data_service_proto_msgTypes,
 	}.Build()
-	File_pkg_pb_data_service_data_service_streaming_proto = out.File
-	file_pkg_pb_data_service_data_service_streaming_proto_goTypes = nil
-	file_pkg_pb_data_service_data_service_streaming_proto_depIdxs = nil
+	File_pkg_pb_data_service_data_service_proto = out.File
+	file_pkg_pb_data_service_data_service_proto_goTypes = nil
+	file_pkg_pb_data_service_data_service_proto_depIdxs = nil
 }

@@ -2,12 +2,13 @@ package manager
 
 import (
 	"fmt"
+	"sync"
+	"time"
+
 	"github.com/google/uuid"
 	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/domain"
 	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/provider"
 	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/router"
-	"sync"
-	"time"
 )
 
 type Manager struct {
@@ -38,59 +39,118 @@ func NewManager(router *router.Router) *Manager {
 	}
 }
 
-func (m *Manager) StartStream(ids []domain.Identifier) (uuid.UUID, error) {
+func (m *Manager) StartStream() (uuid.UUID, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Validate Identifiers, prevents unnecessary calls to providers
-	for _, id := range ids {
-		if id.Provider == "" || id.Subject == "" {
-			return uuid.Nil, fmt.Errorf("invalid identifier: %v", id)
-		}
-		if _, ok := m.providers[id.Provider]; !ok {
-			return uuid.Nil, fmt.Errorf("unknown provider: %s", id.Provider)
-		}
-		if !m.providers[id.Provider].IsValidSubject(id.Subject, false) {
-			return uuid.Nil, fmt.Errorf("invalid subject for provider %s: %s", id.Provider, id.Subject)
-		}
-	}
-
-	// Provision provider streams
-	for _, id := range ids {
-		if _, ok := m.providerStreams[id]; ok {
-			continue // Skip if requested stream is already being provided
-		}
-
-		ch := make(chan domain.Message, 64)
-		if err := m.providers[id.Provider].RequestStream(id.Subject, ch); err != nil {
-			return uuid.Nil, fmt.Errorf("provision %v: %w", id, err)
-		}
-		m.providerStreams[id] = ch
-
-		// Start routine to route the provider stream to the router's input channel
-		go func(ch chan domain.Message) {
-			for msg := range ch {
-				m.router.IncomingChannel() <- msg
-			}
-		}(ch)
-	}
-
 	streamID := uuid.New()
-
 	m.clientStreams[streamID] = &ClientStream{
 		UUID:        streamID,
-		Identifiers: ids,
-		OutChannel:  nil, // Initially nil, will be set when connected
+		Identifiers: nil, // start empty
+		OutChannel:  nil, // not yet connected
 		Timer: time.AfterFunc(1*time.Minute, func() {
 			fmt.Printf("stream %s expired due to inactivity\n", streamID)
-			m.StopStream(streamID)
+			err := m.StopStream(streamID)
+			if err != nil {
+				fmt.Printf("failed to stop stream after timeout: %v\n", err)
+			}
 		}),
 	}
 
 	return streamID, nil
 }
 
-func (m *Manager) StopStream(streamID uuid.UUID) {
+func (m *Manager) ConfigureStream(streamID uuid.UUID, newIds []domain.Identifier) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	stream, ok := m.clientStreams[streamID]
+	if !ok {
+		return fmt.Errorf("stream not found: %s", streamID)
+	}
+
+	// Validate new identifiers.
+	for _, id := range newIds {
+		if id.Provider == "" || id.Subject == "" {
+			return fmt.Errorf("empty identifier: %v", id)
+		}
+		prov, exists := m.providers[id.Provider]
+		if !exists {
+			return fmt.Errorf("unknown provider: %s", id.Provider)
+		}
+		if !prov.IsValidSubject(id.Subject, false) {
+			return fmt.Errorf("invalid subject %q for provider %s", id.Subject, id.Provider)
+		}
+	}
+
+	// Generate old and new sets of identifiers
+	oldSet := make(map[domain.Identifier]struct{}, len(stream.Identifiers))
+	for _, id := range stream.Identifiers {
+		oldSet[id] = struct{}{}
+	}
+	newSet := make(map[domain.Identifier]struct{}, len(newIds))
+	for _, id := range newIds {
+		newSet[id] = struct{}{}
+	}
+
+	// Add identifiers that are in newIds but not in oldSet
+	for _, id := range newIds {
+		if _, seen := oldSet[id]; !seen {
+			// Provision the stream from the provider if needed
+			if _, ok := m.providerStreams[id]; !ok {
+				ch := make(chan domain.Message, 64)
+				if err := m.providers[id.Provider].RequestStream(id.Subject, ch); err != nil {
+					return fmt.Errorf("provision %v: %w", id, err)
+				}
+				m.providerStreams[id] = ch
+
+				incomingChannel := m.router.IncomingChannel()
+				go func(c chan domain.Message) {
+					for msg := range c {
+						incomingChannel <- msg
+					}
+				}(ch)
+			}
+
+			// Register the new identifier with the router, only if there's an active output channel (meaning the stream is connected)
+			if stream.OutChannel != nil {
+				m.router.RegisterRoute(id, stream.OutChannel)
+			}
+		}
+	}
+
+	// Remove identifiers that are in oldSet but not in newSet
+	for _, oldId := range stream.Identifiers {
+		if _, keep := newSet[oldId]; !keep {
+			// Deregister the identifier from the router, only if there's an active output channel (meaning the stream is connected)
+			if stream.OutChannel != nil {
+				m.router.DeregisterRoute(oldId, stream.OutChannel)
+			}
+		}
+	}
+
+	// Set the new identifiers for the stream
+	stream.Identifiers = newIds
+
+	// Clean up provider streams that are no longer used
+	used := make(map[domain.Identifier]bool)
+	for _, cs := range m.clientStreams {
+		for _, id := range cs.Identifiers {
+			used[id] = true
+		}
+	}
+	for id, ch := range m.providerStreams {
+		if !used[id] {
+			m.providers[id.Provider].CancelStream(id.Subject)
+			close(ch)
+			delete(m.providerStreams, id)
+		}
+	}
+
+	return nil
+}
+
+func (m *Manager) StopStream(streamID uuid.UUID) error {
 	m.DisconnectStream(streamID)
 
 	m.mu.Lock()
@@ -98,7 +158,7 @@ func (m *Manager) StopStream(streamID uuid.UUID) {
 
 	stream, ok := m.clientStreams[streamID]
 	if !ok {
-		return // Stream not found
+		return fmt.Errorf("stream not found: %s", streamID)
 	}
 
 	stream.Timer.Stop()
@@ -121,6 +181,8 @@ func (m *Manager) StopStream(streamID uuid.UUID) {
 			delete(m.providerStreams, id)
 		}
 	}
+
+	return nil
 }
 
 func (m *Manager) ConnectStream(streamID uuid.UUID) (<-chan domain.Message, error) {
@@ -172,7 +234,10 @@ func (m *Manager) DisconnectStream(streamID uuid.UUID) {
 	// Set up the expiry timer
 	stream.Timer = time.AfterFunc(1*time.Minute, func() {
 		fmt.Printf("stream %s expired due to inactivity\n", streamID)
-		m.StopStream(streamID)
+		err := m.StopStream(streamID)
+		if err != nil {
+			fmt.Printf("failed to stop stream after disconnect: %v\n", err)
+		}
 	})
 }
 
