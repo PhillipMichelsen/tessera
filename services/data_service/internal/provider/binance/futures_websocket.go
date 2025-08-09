@@ -99,7 +99,7 @@ func (b *FuturesWebsocket) IsStreamActive(subject string) bool {
 	return ok
 }
 
-func (b *FuturesWebsocket) Fetch(subject string) (domain.Message, error) {
+func (b *FuturesWebsocket) Fetch(_ string) (domain.Message, error) {
 	return domain.Message{}, fmt.Errorf("not supported: websocket provider does not implement fetch")
 }
 

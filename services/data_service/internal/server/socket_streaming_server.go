@@ -4,11 +4,12 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
-	"github.com/google/uuid"
-	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/manager"
 	"io"
 	"net"
 	"strings"
+
+	"github.com/google/uuid"
+	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/manager"
 )
 
 type SocketStreamingServer struct {
@@ -34,7 +35,14 @@ func (s *SocketStreamingServer) Serve(lis net.Listener) error {
 }
 
 func (s *SocketStreamingServer) handleConnection(conn net.Conn) {
-	defer conn.Close()
+	defer func(conn net.Conn) {
+		err := conn.Close()
+		if err != nil {
+			fmt.Printf("Failed to close connection: %v\n", err)
+		} else {
+			fmt.Println("Connection closed")
+		}
+	}(conn)
 	reader := bufio.NewReader(conn)
 
 	raw, err := reader.ReadString('\n')
