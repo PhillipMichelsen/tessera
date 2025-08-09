@@ -45,7 +45,8 @@ func (s *GRPCStreamingServer) ConnectStream(req *pb.ConnectStreamRequest, stream
 					Provider: msg.Identifier.Provider,
 					Subject:  msg.Identifier.Subject,
 				},
-				Payload: fmt.Sprintf("%v", msg.Payload),
+				Payload:  msg.Payload,
+				Encoding: string(msg.Encoding),
 			})
 
 			if err != nil {

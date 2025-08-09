@@ -22,7 +22,8 @@ message Identifier {
 
 message Message {
   Identifier identifier = 1;
-  string payload = 2; // JSON-encoded data
+  bytes payload = 2; // JSON-encoded data
+  string encoding = 3; // e.g., "json", "protobuf"
 }
 
 // Control Requests and Responses

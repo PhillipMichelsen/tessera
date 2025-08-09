@@ -141,7 +141,8 @@ func (b *FuturesWebsocket) readLoop() {
 				Provider: "binance_futures_websocket",
 				Subject:  container.Stream,
 			},
-			Payload: container.Data,
+			Payload:  []byte(container.Data),
+			Encoding: domain.EncodingJSON,
 		}
 
 		select {

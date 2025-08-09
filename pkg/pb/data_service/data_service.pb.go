@@ -77,7 +77,8 @@ func (x *Identifier) GetSubject() string {
 type Message struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Identifier    *Identifier            `protobuf:"bytes,1,opt,name=identifier,proto3" json:"identifier,omitempty"`
-	Payload       string                 `protobuf:"bytes,2,opt,name=payload,proto3" json:"payload,omitempty"` // JSON-encoded data
+	Payload       []byte                 `protobuf:"bytes,2,opt,name=payload,proto3" json:"payload,omitempty"`   // JSON-encoded data
+	Encoding      string                 `protobuf:"bytes,3,opt,name=encoding,proto3" json:"encoding,omitempty"` // e.g., "json", "protobuf"
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -119,9 +120,16 @@ func (x *Message) GetIdentifier() *Identifier {
 	return nil
 }
 
-func (x *Message) GetPayload() string {
+func (x *Message) GetPayload() []byte {
 	if x != nil {
 		return x.Payload
+	}
+	return nil
+}
+
+func (x *Message) GetEncoding() string {
+	if x != nil {
+		return x.Encoding
 	}
 	return ""
 }
@@ -428,12 +436,13 @@ const file_pkg_pb_data_service_data_service_proto_rawDesc = "" +
 	"\n" +
 	"Identifier\x12\x1a\n" +
 	"\bprovider\x18\x01 \x01(\tR\bprovider\x12\x18\n" +
-	"\asubject\x18\x02 \x01(\tR\asubject\"]\n" +
+	"\asubject\x18\x02 \x01(\tR\asubject\"y\n" +
 	"\aMessage\x128\n" +
 	"\n" +
 	"identifier\x18\x01 \x01(\v2\x18.data_service.IdentifierR\n" +
 	"identifier\x12\x18\n" +
-	"\apayload\x18\x02 \x01(\tR\apayload\"\x14\n" +
+	"\apayload\x18\x02 \x01(\fR\apayload\x12\x1a\n" +
+	"\bencoding\x18\x03 \x01(\tR\bencoding\"\x14\n" +
 	"\x12StartStreamRequest\"6\n" +
 	"\x13StartStreamResponse\x12\x1f\n" +
 	"\vstream_uuid\x18\x01 \x01(\tR\n" +
