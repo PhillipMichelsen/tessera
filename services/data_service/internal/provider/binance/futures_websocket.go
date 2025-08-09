@@ -77,6 +77,8 @@ func (b *FuturesWebsocket) CancelStream(subject string) {
 	}
 	_ = b.conn.WriteJSON(msg)
 
+	fmt.Println("Unsubscribed from stream:", subject)
+
 	delete(b.activeStreams, subject)
 }
 

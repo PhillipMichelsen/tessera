@@ -1,25 +1,21 @@
-# Stage 1: Builder
-FROM golang:latest AS builder
+# ---- Builder ----
+FROM golang:1.24-alpine AS builder
 
+ENV CGO_ENABLED=0 GOOS=linux
 WORKDIR /app
 
-# Copy go mod and download deps
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy source
 COPY . .
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg/mod \
+    go build -trimpath -ldflags="-s -w" \
+      -o /out/data-service ./services/data_service/cmd/data_service
 
-# Build binary
-RUN CGO_ENABLED=0 GOOS=linux go build -o /data_service ./services/data_service/cmd
-
-# Stage 2: Runner
-FROM debian:bullseye-slim
-
-# Minimal setup
-RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
-
-# Copy binary
-COPY --from=builder /data_service /usr/local/bin/data_service
-
-ENTRYPOINT ["data_service"]
+# ---- Runtime ----
+FROM gcr.io/distroless/static:nonroot
+EXPOSE 50051 50052 6000
+COPY --from=builder /out/data-service /bin/data-service
+USER nonroot:nonroot
+ENTRYPOINT ["/bin/data-service"]
