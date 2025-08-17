@@ -109,7 +109,7 @@ func (b *FuturesWebsocket) IsValidSubject(subject string, isFetch bool) bool {
 	if isFetch {
 		return false
 	}
-	return len(subject) > 0 // Extend with regex or lookup if needed
+	return len(subject) > 0
 }
 
 func (b *FuturesWebsocket) readLoop() {
@@ -138,13 +138,15 @@ func (b *FuturesWebsocket) readLoop() {
 			continue
 		}
 
+		id, err := domain.RawID("binance_futures_websocket", container.Stream)
+		if err != nil {
+			continue
+		}
+
 		msg := domain.Message{
-			Identifier: domain.Identifier{
-				Provider: "binance_futures_websocket",
-				Subject:  container.Stream,
-			},
-			Payload:  []byte(container.Data),
-			Encoding: domain.EncodingJSON,
+			Identifier: id,
+			Payload:    container.Data,
+			Encoding:   domain.EncodingJSON,
 		}
 
 		select {

@@ -30,7 +30,7 @@ type ClientStream struct {
 }
 
 func NewManager(router *router.Router) *Manager {
-	go router.Run() // Start the router in a separate goroutine
+	go router.Run()
 	return &Manager{
 		providers:       make(map[string]provider.Provider),
 		providerStreams: make(map[domain.Identifier]chan domain.Message),
@@ -46,8 +46,8 @@ func (m *Manager) StartStream() (uuid.UUID, error) {
 	streamID := uuid.New()
 	m.clientStreams[streamID] = &ClientStream{
 		UUID:        streamID,
-		Identifiers: nil, // start empty
-		OutChannel:  nil, // not yet connected
+		Identifiers: nil,
+		OutChannel:  nil,
 		Timer: time.AfterFunc(1*time.Minute, func() {
 			fmt.Printf("stream %s expired due to inactivity\n", streamID)
 			err := m.StopStream(streamID)
@@ -69,21 +69,22 @@ func (m *Manager) ConfigureStream(streamID uuid.UUID, newIds []domain.Identifier
 		return fmt.Errorf("stream not found: %s", streamID)
 	}
 
-	// Validate new identifiers.
 	for _, id := range newIds {
-		if id.Provider == "" || id.Subject == "" {
-			return fmt.Errorf("empty identifier: %v", id)
-		}
-		prov, exists := m.providers[id.Provider]
-		if !exists {
-			return fmt.Errorf("unknown provider: %s", id.Provider)
-		}
-		if !prov.IsValidSubject(id.Subject, false) {
-			return fmt.Errorf("invalid subject %q for provider %s", id.Subject, id.Provider)
+		if id.IsRaw() {
+			providerName, subject, ok := id.ProviderSubject()
+			if !ok || providerName == "" || subject == "" {
+				return fmt.Errorf("empty identifier: %v", id)
+			}
+			prov, exists := m.providers[providerName]
+			if !exists {
+				return fmt.Errorf("unknown provider: %s", providerName)
+			}
+			if !prov.IsValidSubject(subject, false) {
+				return fmt.Errorf("invalid subject %q for provider %s", subject, providerName)
+			}
 		}
 	}
 
-	// Generate old and new sets of identifiers
 	oldSet := make(map[domain.Identifier]struct{}, len(stream.Identifiers))
 	for _, id := range stream.Identifiers {
 		oldSet[id] = struct{}{}
@@ -93,55 +94,54 @@ func (m *Manager) ConfigureStream(streamID uuid.UUID, newIds []domain.Identifier
 		newSet[id] = struct{}{}
 	}
 
-	// Add identifiers that are in newIds but not in oldSet
 	for _, id := range newIds {
 		if _, seen := oldSet[id]; !seen {
-			// Provision the stream from the provider if needed
-			if _, ok := m.providerStreams[id]; !ok {
-				ch := make(chan domain.Message, 64)
-				if err := m.providers[id.Provider].RequestStream(id.Subject, ch); err != nil {
-					return fmt.Errorf("provision %v: %w", id, err)
-				}
-				m.providerStreams[id] = ch
-
-				incomingChannel := m.router.IncomingChannel()
-				go func(c chan domain.Message) {
-					for msg := range c {
-						incomingChannel <- msg
+			if id.IsRaw() {
+				if _, ok := m.providerStreams[id]; !ok {
+					ch := make(chan domain.Message, 64)
+					providerName, subject, _ := id.ProviderSubject()
+					if err := m.providers[providerName].RequestStream(subject, ch); err != nil {
+						return fmt.Errorf("provision %v: %w", id, err)
 					}
-				}(ch)
+					m.providerStreams[id] = ch
+
+					incomingChannel := m.router.IncomingChannel()
+					go func(c chan domain.Message) {
+						for msg := range c {
+							incomingChannel <- msg
+						}
+					}(ch)
+				}
 			}
 
-			// Register the new identifier with the router, only if there's an active output channel (meaning the stream is connected)
 			if stream.OutChannel != nil {
 				m.router.RegisterRoute(id, stream.OutChannel)
 			}
 		}
 	}
 
-	// Remove identifiers that are in oldSet but not in newSet
 	for _, oldId := range stream.Identifiers {
 		if _, keep := newSet[oldId]; !keep {
-			// Deregister the identifier from the router, only if there's an active output channel (meaning the stream is connected)
 			if stream.OutChannel != nil {
 				m.router.DeregisterRoute(oldId, stream.OutChannel)
 			}
 		}
 	}
 
-	// Set the new identifiers for the stream
 	stream.Identifiers = newIds
 
-	// Clean up provider streams that are no longer used
 	used := make(map[domain.Identifier]bool)
 	for _, cs := range m.clientStreams {
 		for _, id := range cs.Identifiers {
-			used[id] = true
+			if id.IsRaw() {
+				used[id] = true
+			}
 		}
 	}
 	for id, ch := range m.providerStreams {
 		if !used[id] {
-			m.providers[id.Provider].CancelStream(id.Subject)
+			providerName, subject, _ := id.ProviderSubject()
+			m.providers[providerName].CancelStream(subject)
 			close(ch)
 			delete(m.providerStreams, id)
 		}
@@ -165,18 +165,19 @@ func (m *Manager) StopStream(streamID uuid.UUID) error {
 
 	delete(m.clientStreams, streamID)
 
-	// Find provider streams that are used by other client streams
 	used := make(map[domain.Identifier]bool)
 	for _, s := range m.clientStreams {
 		for _, id := range s.Identifiers {
-			used[id] = true
+			if id.IsRaw() {
+				used[id] = true
+			}
 		}
 	}
 
-	// Cancel provider streams that are not used by any client stream
 	for id, ch := range m.providerStreams {
 		if !used[id] {
-			m.providers[id.Provider].CancelStream(id.Subject)
+			providerName, subject, _ := id.ProviderSubject()
+			m.providers[providerName].CancelStream(subject)
 			close(ch)
 			delete(m.providerStreams, id)
 		}
@@ -219,19 +220,16 @@ func (m *Manager) DisconnectStream(streamID uuid.UUID) {
 
 	stream, ok := m.clientStreams[streamID]
 	if !ok || stream.OutChannel == nil {
-		return // already disconnected or does not exist
+		return
 	}
 
-	// Deregister all identifiers from the router
 	for _, ident := range stream.Identifiers {
 		m.router.DeregisterRoute(ident, stream.OutChannel)
 	}
 
-	// Close the output channel
 	close(stream.OutChannel)
 	stream.OutChannel = nil
 
-	// Set up the expiry timer
 	stream.Timer = time.AfterFunc(1*time.Minute, func() {
 		fmt.Printf("stream %s expired due to inactivity\n", streamID)
 		err := m.StopStream(streamID)
@@ -256,6 +254,6 @@ func (m *Manager) AddProvider(name string, p provider.Provider) {
 	m.providers[name] = p
 }
 
-func (m *Manager) RemoveProvider(name string) {
-	panic("not implemented yet") // TODO: Implement provider removal logic
+func (m *Manager) RemoveProvider(_ string) {
+	panic("not implemented yet")
 }

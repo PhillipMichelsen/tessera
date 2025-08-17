@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	pb "gitlab.michelsen.id/phillmichelsen/tessera/pkg/pb/data_service"
@@ -22,7 +23,6 @@ func NewSocketStreamingServer(m *manager.Manager) *SocketStreamingServer {
 	return &SocketStreamingServer{manager: m}
 }
 
-// Accepts connections and hands each off to handleConnection.
 func (s *SocketStreamingServer) Serve(lis net.Listener) error {
 	for {
 		conn, err := lis.Accept()
@@ -43,16 +43,16 @@ func (s *SocketStreamingServer) handleConnection(conn net.Conn) {
 		}
 	}()
 
-	// Low-latency socket hints (best-effort).
 	if tc, ok := conn.(*net.TCPConn); ok {
 		_ = tc.SetNoDelay(true)
 		_ = tc.SetWriteBuffer(512 * 1024)
 		_ = tc.SetReadBuffer(512 * 1024)
+		_ = tc.SetKeepAlive(true)
+		_ = tc.SetKeepAlivePeriod(30 * time.Second)
 	}
 
 	reader := bufio.NewReader(conn)
 
-	// Protocol header: first line is the stream UUID.
 	raw, err := reader.ReadString('\n')
 	if err != nil {
 		fmt.Printf("read stream UUID error: %v\n", err)
@@ -74,9 +74,8 @@ func (s *SocketStreamingServer) handleConnection(conn net.Conn) {
 	defer s.manager.DisconnectStream(streamUUID)
 
 	writer := bufio.NewWriterSize(conn, 256*1024)
-	defer func(writer *bufio.Writer) {
-		err := writer.Flush()
-		if err != nil {
+	defer func(w *bufio.Writer) {
+		if err := w.Flush(); err != nil {
 			fmt.Printf("final flush error: %v\n", err)
 		}
 	}(writer)
@@ -85,27 +84,20 @@ func (s *SocketStreamingServer) handleConnection(conn net.Conn) {
 	batch := 0
 
 	for msg := range outCh {
-		// Build protobuf payload.
-		message := pb.Message{
-			Identifier: &pb.Identifier{
-				Provider: msg.Identifier.Provider,
-				Subject:  msg.Identifier.Subject,
-			},
-			Payload:  msg.Payload,          // []byte
-			Encoding: string(msg.Encoding), // e.g., "application/json"
+		m := pb.Message{
+			Identifier: &pb.Identifier{Key: msg.Identifier.Key()},
+			Payload:    msg.Payload,
+			Encoding:   string(msg.Encoding),
 		}
 
-		// Marshal protobuf.
-		// Use MarshalAppend to reuse capacity and avoid an extra alloc.
-		size := proto.Size(&message)
+		size := proto.Size(&m)
 		buf := make([]byte, 0, size)
-		b, err := proto.MarshalOptions{}.MarshalAppend(buf, &message)
+		b, err := proto.MarshalOptions{}.MarshalAppend(buf, &m)
 		if err != nil {
 			fmt.Printf("proto marshal error: %v\n", err)
 			continue
 		}
 
-		// Fixed 4-byte big-endian length prefix.
 		var hdr [4]byte
 		if len(b) > int(^uint32(0)) {
 			fmt.Printf("message too large: %d bytes\n", len(b))
@@ -113,7 +105,6 @@ func (s *SocketStreamingServer) handleConnection(conn net.Conn) {
 		}
 		binary.BigEndian.PutUint32(hdr[:], uint32(len(b)))
 
-		// Write frame: [len][bytes].
 		if _, err := writer.Write(hdr[:]); err != nil {
 			if err == io.EOF {
 				return
@@ -139,7 +130,6 @@ func (s *SocketStreamingServer) handleConnection(conn net.Conn) {
 		}
 	}
 
-	// Final flush when channel closes.
 	if err := writer.Flush(); err != nil {
 		fmt.Printf("final flush error: %v\n", err)
 	}

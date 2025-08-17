@@ -21,11 +21,9 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// Domain Models
 type Identifier struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Provider      string                 `protobuf:"bytes,1,opt,name=provider,proto3" json:"provider,omitempty"` // e.g., "binance"
-	Subject       string                 `protobuf:"bytes,2,opt,name=subject,proto3" json:"subject,omitempty"`   // e.g., "BTCUSDT"
+	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -60,16 +58,9 @@ func (*Identifier) Descriptor() ([]byte, []int) {
 	return file_pkg_pb_data_service_data_service_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *Identifier) GetProvider() string {
+func (x *Identifier) GetKey() string {
 	if x != nil {
-		return x.Provider
-	}
-	return ""
-}
-
-func (x *Identifier) GetSubject() string {
-	if x != nil {
-		return x.Subject
+		return x.Key
 	}
 	return ""
 }
@@ -77,8 +68,8 @@ func (x *Identifier) GetSubject() string {
 type Message struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Identifier    *Identifier            `protobuf:"bytes,1,opt,name=identifier,proto3" json:"identifier,omitempty"`
-	Payload       []byte                 `protobuf:"bytes,2,opt,name=payload,proto3" json:"payload,omitempty"`   // JSON-encoded data
-	Encoding      string                 `protobuf:"bytes,3,opt,name=encoding,proto3" json:"encoding,omitempty"` // e.g., "json", "protobuf"
+	Payload       []byte                 `protobuf:"bytes,2,opt,name=payload,proto3" json:"payload,omitempty"`
+	Encoding      string                 `protobuf:"bytes,3,opt,name=encoding,proto3" json:"encoding,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -134,7 +125,6 @@ func (x *Message) GetEncoding() string {
 	return ""
 }
 
-// Control Requests and Responses
 type StartStreamRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -383,7 +373,6 @@ func (*StopStreamResponse) Descriptor() ([]byte, []int) {
 	return file_pkg_pb_data_service_data_service_proto_rawDescGZIP(), []int{7}
 }
 
-// Stream Requests and Responses
 type ConnectStreamRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	StreamUuid    string                 `protobuf:"bytes,1,opt,name=stream_uuid,json=streamUuid,proto3" json:"stream_uuid,omitempty"`
@@ -432,11 +421,10 @@ var File_pkg_pb_data_service_data_service_proto protoreflect.FileDescriptor
 
 const file_pkg_pb_data_service_data_service_proto_rawDesc = "" +
 	"\n" +
-	"&pkg/pb/data_service/data_service.proto\x12\fdata_service\"B\n" +
+	"&pkg/pb/data_service/data_service.proto\x12\fdata_service\"\x1e\n" +
 	"\n" +
-	"Identifier\x12\x1a\n" +
-	"\bprovider\x18\x01 \x01(\tR\bprovider\x12\x18\n" +
-	"\asubject\x18\x02 \x01(\tR\asubject\"y\n" +
+	"Identifier\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\"y\n" +
 	"\aMessage\x128\n" +
 	"\n" +
 	"identifier\x18\x01 \x01(\v2\x18.data_service.IdentifierR\n" +

@@ -28,12 +28,23 @@ func (i *idsFlag) Set(v string) error {
 	return nil
 }
 
-func parseID(s string) (provider, subject string, err error) {
+func parseIDPair(s string) (provider, subject string, err error) {
 	parts := strings.SplitN(s, ":", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		return "", "", fmt.Errorf("want provider:subject, got %q", s)
 	}
 	return parts[0], parts[1], nil
+}
+
+func toIdentifierKey(input string) (string, error) {
+	if strings.Contains(input, "::") {
+		return input, nil
+	}
+	prov, subj, err := parseIDPair(input)
+	if err != nil {
+		return "", err
+	}
+	return "raw::" + strings.ToLower(prov) + "." + subj, nil
 }
 
 func prettyOrRaw(b []byte, pretty bool) string {
@@ -42,7 +53,7 @@ func prettyOrRaw(b []byte, pretty bool) string {
 	}
 	var tmp any
 	if err := json.Unmarshal(b, &tmp); err != nil {
-		return string(b) // not JSON
+		return string(b)
 	}
 	out, err := json.MarshalIndent(tmp, "", "  ")
 	if err != nil {
@@ -51,7 +62,6 @@ func prettyOrRaw(b []byte, pretty bool) string {
 	return string(out)
 }
 
-// waitReady blocks until conn is READY or ctx times out/cancels.
 func waitReady(ctx context.Context, conn *grpc.ClientConn) error {
 	for {
 		s := conn.GetState()
@@ -67,7 +77,6 @@ func waitReady(ctx context.Context, conn *grpc.ClientConn) error {
 	}
 }
 
-//goland:noinspection GoUnhandledErrorResult
 func main() {
 	var ids idsFlag
 	var ctlAddr string
@@ -75,7 +84,7 @@ func main() {
 	var pretty bool
 	var timeout time.Duration
 
-	flag.Var(&ids, "id", "identifier in form provider:subject (repeatable)")
+	flag.Var(&ids, "id", "identifier (provider:subject or canonical key); repeatable")
 	flag.StringVar(&ctlAddr, "ctl", "127.0.0.1:50051", "gRPC control address")
 	flag.StringVar(&strAddr, "str", "127.0.0.1:50052", "gRPC streaming address")
 	flag.BoolVar(&pretty, "pretty", true, "pretty-print JSON payloads when possible")
@@ -83,15 +92,13 @@ func main() {
 	flag.Parse()
 
 	if len(ids) == 0 {
-		fmt.Fprintln(os.Stderr, "provide at least one --id provider:subject")
+		fmt.Fprintln(os.Stderr, "provide at least one --id (provider:subject or canonical key)")
 		os.Exit(2)
 	}
 
-	// Ctrl-C handling
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	// ----- Control client -----
 	ccCtl, err := grpc.NewClient(
 		ctlAddr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
@@ -101,8 +108,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer ccCtl.Close()
-
-	ccCtl.Connect() // start dialing in background
+	ccCtl.Connect()
 
 	ctlConnCtx, cancelCtlConn := context.WithTimeout(ctx, timeout)
 	if err := waitReady(ctlConnCtx, ccCtl); err != nil {
@@ -114,7 +120,6 @@ func main() {
 
 	ctl := pb.NewDataServiceControlClient(ccCtl)
 
-	// Start stream
 	ctxStart, cancelStart := context.WithTimeout(ctx, timeout)
 	startResp, err := ctl.StartStream(ctxStart, &pb.StartStreamRequest{})
 	cancelStart()
@@ -125,15 +130,14 @@ func main() {
 	streamUUID := startResp.GetStreamUuid()
 	fmt.Printf("stream: %s\n", streamUUID)
 
-	// Configure
 	var pbIDs []*pb.Identifier
 	for _, s := range ids {
-		prov, subj, err := parseID(s)
+		key, err := toIdentifierKey(s)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "bad --id: %v\n", err)
 			os.Exit(2)
 		}
-		pbIDs = append(pbIDs, &pb.Identifier{Provider: prov, Subject: subj})
+		pbIDs = append(pbIDs, &pb.Identifier{Key: key})
 	}
 
 	ctxCfg, cancelCfg := context.WithTimeout(ctx, timeout)
@@ -148,7 +152,6 @@ func main() {
 	}
 	fmt.Printf("configured %d identifiers\n", len(pbIDs))
 
-	// ----- Streaming client -----
 	ccStr, err := grpc.NewClient(
 		strAddr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
@@ -158,7 +161,6 @@ func main() {
 		os.Exit(1)
 	}
 	defer ccStr.Close()
-
 	ccStr.Connect()
 
 	strConnCtx, cancelStrConn := context.WithTimeout(ctx, timeout)
@@ -171,7 +173,6 @@ func main() {
 
 	str := pb.NewDataServiceStreamingClient(ccStr)
 
-	// This context lives until Ctrl-C
 	streamCtx, streamCancel := context.WithCancel(ctx)
 	defer streamCancel()
 
@@ -182,7 +183,6 @@ func main() {
 	}
 	fmt.Println("connected; streaming… (Ctrl-C to quit)")
 
-	// Receive loop until Ctrl-C
 	for {
 		select {
 		case <-ctx.Done():
@@ -192,14 +192,14 @@ func main() {
 			msg, err := stream.Recv()
 			if err != nil {
 				if ctx.Err() != nil {
-					return // normal shutdown
+					return
 				}
 				fmt.Fprintf(os.Stderr, "recv: %v\n", err)
 				os.Exit(1)
 			}
 			id := msg.GetIdentifier()
-			fmt.Printf("[%s] %s  bytes=%d  enc=%s  t=%s\n",
-				id.GetProvider(), id.GetSubject(), len(msg.GetPayload()), msg.GetEncoding(),
+			fmt.Printf("[%s] bytes=%d  enc=%s  t=%s\n",
+				id.GetKey(), len(msg.GetPayload()), msg.GetEncoding(),
 				time.Now().Format(time.RFC3339Nano),
 			)
 			fmt.Println(prettyOrRaw(msg.GetPayload(), pretty))

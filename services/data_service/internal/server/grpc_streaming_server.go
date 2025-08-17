@@ -14,9 +14,7 @@ type GRPCStreamingServer struct {
 }
 
 func NewGRPCStreamingServer(m *manager.Manager) *GRPCStreamingServer {
-	return &GRPCStreamingServer{
-		manager: m,
-	}
+	return &GRPCStreamingServer{manager: m}
 }
 
 func (s *GRPCStreamingServer) ConnectStream(req *pb.ConnectStreamRequest, stream pb.DataServiceStreaming_ConnectStreamServer) error {
@@ -39,17 +37,11 @@ func (s *GRPCStreamingServer) ConnectStream(req *pb.ConnectStreamRequest, stream
 			if !ok {
 				return nil
 			}
-
-			err := stream.Send(&pb.Message{
-				Identifier: &pb.Identifier{
-					Provider: msg.Identifier.Provider,
-					Subject:  msg.Identifier.Subject,
-				},
-				Payload:  msg.Payload,
-				Encoding: string(msg.Encoding),
-			})
-
-			if err != nil {
+			if err := stream.Send(&pb.Message{
+				Identifier: &pb.Identifier{Key: msg.Identifier.Key()},
+				Payload:    msg.Payload,
+				Encoding:   string(msg.Encoding),
+			}); err != nil {
 				return err
 			}
 		}

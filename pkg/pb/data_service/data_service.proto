@@ -14,39 +14,26 @@ service DataServiceStreaming {
   rpc ConnectStream(ConnectStreamRequest) returns (stream Message);
 }
 
-// Domain Models
 message Identifier {
-  string provider = 1; // e.g., "binance"
-  string subject = 2; // e.g., "BTCUSDT"
+  string key = 1;
 }
 
 message Message {
   Identifier identifier = 1;
-  bytes payload = 2; // JSON-encoded data
-  string encoding = 3; // e.g., "json", "protobuf"
+  bytes payload = 2;
+  string encoding = 3;
 }
 
-// Control Requests and Responses
 message StartStreamRequest {}
-
-message StartStreamResponse {
-  string stream_uuid = 1;
-}
+message StartStreamResponse { string stream_uuid = 1; }
 
 message ConfigureStreamRequest {
   string stream_uuid = 1;
   repeated Identifier identifiers = 2;
 }
-
 message ConfigureStreamResponse {}
 
-message StopStreamRequest {
-  string stream_uuid = 1;
-}
-
+message StopStreamRequest { string stream_uuid = 1; }
 message StopStreamResponse {}
 
-// Stream Requests and Responses
-message ConnectStreamRequest {
-  string stream_uuid = 1;
-}
+message ConnectStreamRequest { string stream_uuid = 1; }
