@@ -23,7 +23,7 @@ func (s *GRPCStreamingServer) ConnectStream(req *pb.ConnectStreamRequest, stream
 		return fmt.Errorf("invalid UUID: %w", err)
 	}
 
-	ch, err := s.manager.ConnectStream(streamUUID)
+	ch, err := s.manager.ConnectClientStream(streamUUID)
 	if err != nil {
 		return fmt.Errorf("failed to connect: %w", err)
 	}
@@ -31,7 +31,7 @@ func (s *GRPCStreamingServer) ConnectStream(req *pb.ConnectStreamRequest, stream
 	for {
 		select {
 		case <-stream.Context().Done():
-			s.manager.DisconnectStream(streamUUID)
+			s.manager.DisconnectClientStream(streamUUID)
 			return nil
 		case msg, ok := <-ch:
 			if !ok {

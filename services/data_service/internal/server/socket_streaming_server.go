@@ -66,12 +66,12 @@ func (s *SocketStreamingServer) handleConnection(conn net.Conn) {
 		return
 	}
 
-	outCh, err := s.manager.ConnectStream(streamUUID)
+	outCh, err := s.manager.ConnectClientStream(streamUUID)
 	if err != nil {
 		_, _ = fmt.Fprintf(conn, "Failed to connect to stream: %v\n", err)
 		return
 	}
-	defer s.manager.DisconnectStream(streamUUID)
+	defer s.manager.DisconnectClientStream(streamUUID)
 
 	writer := bufio.NewWriterSize(conn, 256*1024)
 	defer func(w *bufio.Writer) {

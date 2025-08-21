@@ -22,7 +22,7 @@ func NewGRPCControlServer(m *manager.Manager) *GRPCControlServer {
 }
 
 func (s *GRPCControlServer) StartStream(_ context.Context, _ *pb.StartStreamRequest) (*pb.StartStreamResponse, error) {
-	streamID, err := s.manager.StartStream()
+	streamID, err := s.manager.StartClientStream()
 	if err != nil {
 		return nil, fmt.Errorf("failed to start stream: %w", err)
 	}
@@ -44,7 +44,7 @@ func (s *GRPCControlServer) ConfigureStream(_ context.Context, req *pb.Configure
 		ids = append(ids, id)
 	}
 
-	if err := s.manager.ConfigureStream(streamID, ids); err != nil {
+	if err := s.manager.ConfigureClientStream(streamID, ids); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "configure failed: %v", err)
 	}
 	return &pb.ConfigureStreamResponse{}, nil
@@ -55,7 +55,7 @@ func (s *GRPCControlServer) StopStream(_ context.Context, req *pb.StopStreamRequ
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid stream_uuid %q: %v", req.StreamUuid, err)
 	}
-	if err := s.manager.StopStream(streamID); err != nil {
+	if err := s.manager.StopClientStream(streamID); err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to stop stream: %v", err)
 	}
 	return &pb.StopStreamResponse{}, nil

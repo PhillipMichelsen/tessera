@@ -92,7 +92,7 @@ func main() {
 	flag.Parse()
 
 	if len(ids) == 0 {
-		fmt.Fprintln(os.Stderr, "provide at least one --id (provider:subject or canonical key)")
+		_, _ = fmt.Fprintln(os.Stderr, "provide at least one --id (provider:subject or canonical key)")
 		os.Exit(2)
 	}
 
@@ -104,16 +104,24 @@ func main() {
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "new control client: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "new control client: %v\n", err)
 		os.Exit(1)
 	}
-	defer ccCtl.Close()
+	defer func(ccCtl *grpc.ClientConn) {
+		err := ccCtl.Close()
+		if err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "close control client: %v\n", err)
+			os.Exit(1)
+		} else {
+			fmt.Println("closed control client")
+		}
+	}(ccCtl)
 	ccCtl.Connect()
 
 	ctlConnCtx, cancelCtlConn := context.WithTimeout(ctx, timeout)
 	if err := waitReady(ctlConnCtx, ccCtl); err != nil {
 		cancelCtlConn()
-		fmt.Fprintf(os.Stderr, "connect control: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "connect control: %v\n", err)
 		os.Exit(1)
 	}
 	cancelCtlConn()
@@ -124,7 +132,7 @@ func main() {
 	startResp, err := ctl.StartStream(ctxStart, &pb.StartStreamRequest{})
 	cancelStart()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "StartStream: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "StartClientStream: %v\n", err)
 		os.Exit(1)
 	}
 	streamUUID := startResp.GetStreamUuid()
@@ -134,7 +142,7 @@ func main() {
 	for _, s := range ids {
 		key, err := toIdentifierKey(s)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "bad --id: %v\n", err)
+			_, _ = fmt.Fprintf(os.Stderr, "bad --id: %v\n", err)
 			os.Exit(2)
 		}
 		pbIDs = append(pbIDs, &pb.Identifier{Key: key})
@@ -147,7 +155,7 @@ func main() {
 	})
 	cancelCfg()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "ConfigureStream: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "ConfigureClientStream: %v\n", err)
 		os.Exit(1)
 	}
 	fmt.Printf("configured %d identifiers\n", len(pbIDs))
@@ -157,16 +165,24 @@ func main() {
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "new streaming client: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "new streaming client: %v\n", err)
 		os.Exit(1)
 	}
-	defer ccStr.Close()
+	defer func(ccStr *grpc.ClientConn) {
+		err := ccStr.Close()
+		if err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "close streaming client: %v\n", err)
+			os.Exit(1)
+		} else {
+			fmt.Println("closed streaming client")
+		}
+	}(ccStr)
 	ccStr.Connect()
 
 	strConnCtx, cancelStrConn := context.WithTimeout(ctx, timeout)
 	if err := waitReady(strConnCtx, ccStr); err != nil {
 		cancelStrConn()
-		fmt.Fprintf(os.Stderr, "connect streaming: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "connect streaming: %v\n", err)
 		os.Exit(1)
 	}
 	cancelStrConn()
@@ -178,7 +194,7 @@ func main() {
 
 	stream, err := str.ConnectStream(streamCtx, &pb.ConnectStreamRequest{StreamUuid: streamUUID})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "ConnectStream: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "ConnectClientStream: %v\n", err)
 		os.Exit(1)
 	}
 	fmt.Println("connected; streaming… (Ctrl-C to quit)")
@@ -194,7 +210,7 @@ func main() {
 				if ctx.Err() != nil {
 					return
 				}
-				fmt.Fprintf(os.Stderr, "recv: %v\n", err)
+				_, _ = fmt.Fprintf(os.Stderr, "recv: %v\n", err)
 				os.Exit(1)
 			}
 			id := msg.GetIdentifier()

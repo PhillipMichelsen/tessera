@@ -39,7 +39,7 @@ func NewManager(router *router.Router) *Manager {
 	}
 }
 
-func (m *Manager) StartStream() (uuid.UUID, error) {
+func (m *Manager) StartClientStream() (uuid.UUID, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -50,7 +50,7 @@ func (m *Manager) StartStream() (uuid.UUID, error) {
 		OutChannel:  nil,
 		Timer: time.AfterFunc(1*time.Minute, func() {
 			fmt.Printf("stream %s expired due to inactivity\n", streamID)
-			err := m.StopStream(streamID)
+			err := m.StopClientStream(streamID)
 			if err != nil {
 				fmt.Printf("failed to stop stream after timeout: %v\n", err)
 			}
@@ -60,7 +60,7 @@ func (m *Manager) StartStream() (uuid.UUID, error) {
 	return streamID, nil
 }
 
-func (m *Manager) ConfigureStream(streamID uuid.UUID, newIds []domain.Identifier) error {
+func (m *Manager) ConfigureClientStream(streamID uuid.UUID, newIds []domain.Identifier) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -150,8 +150,8 @@ func (m *Manager) ConfigureStream(streamID uuid.UUID, newIds []domain.Identifier
 	return nil
 }
 
-func (m *Manager) StopStream(streamID uuid.UUID) error {
-	m.DisconnectStream(streamID)
+func (m *Manager) StopClientStream(streamID uuid.UUID) error {
+	m.DisconnectClientStream(streamID)
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -186,7 +186,7 @@ func (m *Manager) StopStream(streamID uuid.UUID) error {
 	return nil
 }
 
-func (m *Manager) ConnectStream(streamID uuid.UUID) (<-chan domain.Message, error) {
+func (m *Manager) ConnectClientStream(streamID uuid.UUID) (<-chan domain.Message, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -214,7 +214,7 @@ func (m *Manager) ConnectStream(streamID uuid.UUID) (<-chan domain.Message, erro
 	return ch, nil
 }
 
-func (m *Manager) DisconnectStream(streamID uuid.UUID) {
+func (m *Manager) DisconnectClientStream(streamID uuid.UUID) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -232,7 +232,7 @@ func (m *Manager) DisconnectStream(streamID uuid.UUID) {
 
 	stream.Timer = time.AfterFunc(1*time.Minute, func() {
 		fmt.Printf("stream %s expired due to inactivity\n", streamID)
-		err := m.StopStream(streamID)
+		err := m.StopClientStream(streamID)
 		if err != nil {
 			fmt.Printf("failed to stop stream after disconnect: %v\n", err)
 		}
