@@ -53,17 +53,19 @@ func main() {
 	}()
 
 	// Socket Streaming Server
-	socketStreamingServer := server.NewSocketStreamingServer(m)
-	go func() {
-		socketLis, err := net.Listen("tcp", ":6000")
-		if err != nil {
-			log.Fatalf("Failed to listen for socket: %v", err)
-		}
-		log.Println("Socket server listening on :6000")
-		if err := socketStreamingServer.Serve(socketLis); err != nil {
-			log.Fatalf("Socket server error: %v", err)
-		}
-	}()
+	/*
+		socketStreamingServer := server.NewSocketStreamingServer(m)
+		go func() {
+			socketLis, err := net.Listen("tcp", ":6000")
+			if err != nil {
+				log.Fatalf("Failed to listen for socket: %v", err)
+			}
+			log.Println("Socket server listening on :6000")
+			if err := socketStreamingServer.Serve(socketLis); err != nil {
+				log.Fatalf("Socket server error: %v", err)
+			}
+		}()
+	*/
 
 	// Block main forever
 	select {}
