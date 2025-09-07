@@ -28,15 +28,7 @@ func (s *GRPCStreamingServer) ConnectStream(req *pb.ConnectStreamRequest, stream
 		return fmt.Errorf("invalid UUID: %w", err)
 	}
 
-	// Defaults; tune or map from req if your proto carries options.
-	opts := manager.ChannelOpts{
-		InBufSize:    256,
-		OutBufSize:   1024,
-		DropOutbound: true, // do not let slow clients stall producers
-		DropInbound:  true, // irrelevant here (we don't send inbound), safe default
-	}
-
-	_, out, err := s.manager.GetChannels(sessionID, opts)
+	_, out, err := s.manager.AttachClient(sessionID, 256, 1024)
 	if err != nil {
 		return fmt.Errorf("attach channels: %w", err)
 	}

@@ -17,10 +17,10 @@ import (
 func main() {
 	fmt.Println("Starting Data Service...")
 	// Setup
-	r := router.NewRouter()
+	r := router.NewRouter(2048)
 	m := manager.NewManager(r)
 	binanceFutures := binance.NewFuturesWebsocket()
-	m.AddProvider("binance_futures_websocket", binanceFutures)
+	_ = m.AddProvider("binance_futures_websocket", binanceFutures)
 
 	// gRPC Control Server
 	grpcControlServer := grpc.NewServer()

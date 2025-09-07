@@ -1,19 +1,16 @@
 package provider
 
-import (
-	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/domain"
-)
+import "gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/domain"
 
 type Provider interface {
 	Start() error
 	Stop()
 
-	RequestStream(subject string, channel chan domain.Message) error
-	CancelStream(subject string)
-	GetActiveStreams() []string
-	IsStreamActive(subject string) bool
+	StartStream(key string, destination chan<- domain.Message) <-chan error
+	StopStream(key string) <-chan error
 
-	Fetch(subject string) (domain.Message, error)
+	Fetch(key string) (domain.Message, error)
 
-	IsValidSubject(subject string, isFetch bool) bool
+	IsStreamActive(key string) bool
+	IsValidSubject(key string, isFetch bool) bool
 }

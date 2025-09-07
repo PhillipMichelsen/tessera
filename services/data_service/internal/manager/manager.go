@@ -1,10 +1,7 @@
 package manager
 
 import (
-	"context"
-	"errors"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -13,512 +10,376 @@ import (
 	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/router"
 )
 
-var (
-	ErrSessionNotFound    = errors.New("session not found")
-	ErrSessionClosed      = errors.New("session closed")
-	ErrInvalidIdentifier  = errors.New("invalid identifier")
-	ErrUnknownProvider    = errors.New("unknown provider")
-	ErrClientAlreadyBound = errors.New("client channels already bound")
-)
-
-const (
-	defaultInternalBuf = 1024
-	defaultClientBuf   = 256
-)
-
-type ChannelOpts struct {
-	InBufSize    int
-	OutBufSize   int
-	DropOutbound bool // If true, drop outbound to client when its buffer is full. If false, block.
-	DropInbound  bool // If true, drop inbound from client when internalIn is full. If false, block.
-}
-
-// Manager owns providers, sessions, and the router fanout.
+// Manager is a single-goroutine actor that owns all state.
 type Manager struct {
-	providers         map[string]provider.Provider
-	providerStreams   map[domain.Identifier]chan domain.Message
-	rawReferenceCount map[domain.Identifier]int
+	// Command channel
+	cmdCh chan any
 
-	sessions map[uuid.UUID]*session
+	// State (loop-owned)
+	providers map[string]provider.Provider
+	sessions  map[uuid.UUID]*session
+	streamRef map[domain.Identifier]int
 
+	// Router
 	router *router.Router
-	mu     sync.Mutex
 }
 
-type session struct {
-	id uuid.UUID
-
-	// Stable internal channels.
-	internalIn  chan domain.Message // forwarded into router.IncomingChannel()
-	internalOut chan domain.Message // registered as router route target, forwarded to clientOut (or dropped if unattached)
-
-	// Client Channels (optional). Created on GetChannels and cleared on DetachClient.
-	clientIn  chan domain.Message // caller writes
-	clientOut chan domain.Message // caller reads
-
-	// Controls the permanent internalIn forwarder.
-	cancelInternal context.CancelFunc
-
-	// Permanent outbound drain control.
-	egressWG sync.WaitGroup
-
-	// Policy
-	dropWhenUnattached bool // always drop when no client attached
-	dropWhenSlow       bool // mirror ChannelOpts.DropOutbound
-	dropInbound        bool // mirror ChannelOpts.DropInbound
-
-	bound     map[domain.Identifier]struct{} // map for quick existence checks
-	closed    bool
-	idleAfter time.Duration
-	idleTimer *time.Timer
-}
-
-func NewManager(r *router.Router) *Manager {
+// New creates a manager and starts its run loop.
+func New(r *router.Router) *Manager {
+	m := &Manager{
+		cmdCh:     make(chan any, 256),
+		providers: make(map[string]provider.Provider),
+		sessions:  make(map[uuid.UUID]*session),
+		streamRef: make(map[domain.Identifier]int),
+		router:    r,
+	}
 	go r.Run()
-	return &Manager{
-		providers:         make(map[string]provider.Provider),
-		providerStreams:   make(map[domain.Identifier]chan domain.Message),
-		rawReferenceCount: make(map[domain.Identifier]int),
-		sessions:          make(map[uuid.UUID]*session),
-		router:            r,
-	}
+	go m.run()
+	return m
 }
 
-// NewSession creates a session with stable internal channels and two permanent workers:
-// 1) internalIn -> router.Incoming  2) internalOut -> clientOut (or discard if unattached)
+// Public API (posts commands to loop)
+
+// AddProvider adds and starts a new provider.
+func (m *Manager) AddProvider(name string, p provider.Provider) error {
+	resp := make(chan error, 1)
+	m.cmdCh <- addProviderCmd{name: name, p: p, resp: resp}
+	return <-resp
+}
+
+// RemoveProvider stops and removes a provider, cleaning up all sessions.
+func (m *Manager) RemoveProvider(name string) error {
+	resp := make(chan error, 1)
+	m.cmdCh <- removeProviderCmd{name: name, resp: resp}
+	return <-resp
+}
+
+// NewSession creates a new session with the given idle timeout.
 func (m *Manager) NewSession(idleAfter time.Duration) (uuid.UUID, error) {
-	s := &session{
-		id:                 uuid.New(),
-		internalIn:         make(chan domain.Message, defaultInternalBuf),
-		internalOut:        make(chan domain.Message, defaultInternalBuf),
-		bound:              make(map[domain.Identifier]struct{}),
-		idleAfter:          idleAfter,
-		dropWhenUnattached: true,
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	s.cancelInternal = cancel
-
-	m.mu.Lock()
-	m.sessions[s.id] = s
-	incoming := m.router.IncomingChannel()
-	m.mu.Unlock()
-
-	// Permanent forwarder: internalIn -> router.Incoming
-	go func(ctx context.Context, in <-chan domain.Message) {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case msg, ok := <-in:
-				if !ok {
-					return
-				}
-				// Hook: filter/validate/meter/throttle inbound to router here.
-				incoming <- msg
-			}
-		}
-	}(ctx, s.internalIn)
-
-	// Permanent drain: internalOut -> clientOut (drop if unattached)
-	s.egressWG.Add(1)
-	go func(sid uuid.UUID) {
-		defer s.egressWG.Done()
-		for msg := range s.internalOut {
-			m.mu.Lock()
-			// Session might be gone; re-fetch safely.
-			s, ok := m.sessions[sid]
-			var cout chan domain.Message
-			var dropSlow, attached bool
-			if ok {
-				cout = s.clientOut
-				dropSlow = s.dropWhenSlow
-				attached = cout != nil
-			}
-			m.mu.Unlock()
-
-			switch {
-			case !attached:
-				// unattached => drop
-
-			case dropSlow: // typical case when attached
-				select {
-				case cout <- msg:
-				default:
-					// drop on slow consumer
-				}
-
-			default:
-				cout <- msg // push to client, block if slow
-			}
-		}
-	}(s.id)
-
-	return s.id, nil
+	resp := make(chan struct {
+		id  uuid.UUID
+		err error
+	}, 1)
+	m.cmdCh <- newSessionCmd{idleAfter: idleAfter, resp: resp}
+	r := <-resp
+	return r.id, r.err
 }
 
-// GetChannels creates a fresh client attachment and hooks inbound (clientIn -> internalIn).
-// Outbound delivery is handled by the permanent drain.
-// Only one attachment at a time.
-func (m *Manager) GetChannels(id uuid.UUID, opts ChannelOpts) (chan<- domain.Message, <-chan domain.Message, error) {
-	if opts.InBufSize <= 0 {
-		opts.InBufSize = defaultClientBuf
-	}
-	if opts.OutBufSize <= 0 {
-		opts.OutBufSize = defaultClientBuf
-	}
-
-	m.mu.Lock()
-	s, ok := m.sessions[id]
-	if !ok {
-		m.mu.Unlock()
-		return nil, nil, ErrSessionNotFound
-	}
-	if s.closed {
-		m.mu.Unlock()
-		return nil, nil, ErrSessionClosed
-	}
-	if s.clientIn != nil || s.clientOut != nil {
-		m.mu.Unlock()
-		return nil, nil, ErrClientAlreadyBound
-	}
-
-	// Create attachment channels.
-	cin := make(chan domain.Message, opts.InBufSize)
-	cout := make(chan domain.Message, opts.OutBufSize)
-	s.clientIn, s.clientOut = cin, cout
-	s.dropWhenSlow = opts.DropOutbound
-	s.dropInbound = opts.DropInbound
-
-	// Stop idle timer while attached.
-	if s.idleTimer != nil {
-		s.idleTimer.Stop()
-		s.idleTimer = nil
-	}
-
-	internalIn := s.internalIn
-	m.mu.Unlock()
-
-	// Forward clientIn -> internalIn
-	go func(src <-chan domain.Message, dst chan<- domain.Message, drop bool) {
-		for msg := range src {
-			if drop {
-				select {
-				case dst <- msg:
-				default:
-					// drop inbound on internal backpressure
-				}
-			} else {
-				dst <- msg
-			}
-		}
-		// client closed input; forwarder exits
-	}(cin, internalIn, opts.DropInbound)
-
-	// Return directional views.
-	return (chan<- domain.Message)(cin), (<-chan domain.Message)(cout), nil
+// AttachClient attaches a client to a session, creates and returns client channels for the session.
+func (m *Manager) AttachClient(id uuid.UUID, inBuf, outBuf int) (chan<- domain.Message, <-chan domain.Message, error) {
+	resp := make(chan struct {
+		cin  chan<- domain.Message
+		cout <-chan domain.Message
+		err  error
+	}, 1)
+	m.cmdCh <- attachCmd{sid: id, inBuf: inBuf, outBuf: outBuf, resp: resp}
+	r := <-resp
+	return r.cin, r.cout, r.err
 }
 
-// DetachClient clears the client attachment and starts the idle close timer if configured.
-// Does not close clientOut to avoid send-on-closed races with the permanent drain.
+// DetachClient detaches the client from the session, closes client channels and arms timeout.
 func (m *Manager) DetachClient(id uuid.UUID) error {
-	m.mu.Lock()
-	s, ok := m.sessions[id]
-	if !ok {
-		m.mu.Unlock()
-		return ErrSessionNotFound
-	}
-	if s.closed {
-		m.mu.Unlock()
-		return ErrSessionClosed
-	}
-	cin := s.clientIn
-	// Make unattached; permanent drain will drop while nil.
-	s.clientIn, s.clientOut = nil, nil
-	after := s.idleAfter
-	m.mu.Unlock()
-
-	if cin != nil {
-		// We own the channel. Closing signals writers to stop.
-		close(cin)
-	}
-
-	if after > 0 {
-		m.mu.Lock()
-		ss, ok := m.sessions[id]
-		if ok && !ss.closed && ss.clientOut == nil && ss.idleTimer == nil {
-			ss.idleTimer = time.AfterFunc(after, func() { _ = m.CloseSession(id) })
-		}
-		m.mu.Unlock()
-	}
-	return nil
+	resp := make(chan error, 1)
+	m.cmdCh <- detachCmd{sid: id, resp: resp}
+	return <-resp
 }
 
-func (m *Manager) Subscribe(id uuid.UUID, ids ...domain.Identifier) error {
-	m.mu.Lock()
-	s, ok := m.sessions[id]
-	if !ok {
-		m.mu.Unlock()
-		return ErrSessionNotFound
-	}
-	out := s.internalOut
-	m.mu.Unlock()
+// ConfigureSession sets the next set of identifiers for the session, starting and stopping streams as needed.
+func (m *Manager) ConfigureSession(id uuid.UUID, next []domain.Identifier) error {
+	resp := make(chan error, 1)
+	m.cmdCh <- configureCmd{sid: id, next: next, resp: resp}
+	return <-resp
+}
 
-	for _, ident := range ids {
-		m.mu.Lock()
-		if _, exists := s.bound[ident]; exists {
-			m.mu.Unlock()
-			continue
+// CloseSession closes and removes the session, cleaning up all bindings.
+func (m *Manager) CloseSession(id uuid.UUID) error {
+	resp := make(chan error, 1)
+	m.cmdCh <- closeSessionCmd{sid: id, resp: resp}
+	return <-resp
+}
+
+// The main loop of the manager, processing commands serially.
+func (m *Manager) run() {
+	for {
+		msg := <-m.cmdCh
+		switch c := msg.(type) {
+		case addProviderCmd:
+			m.handleAddProvider(c)
+		case removeProviderCmd:
+			m.handleRemoveProvider(c)
+		case newSessionCmd:
+			m.handleNewSession(c)
+		case attachCmd:
+			m.handleAttach(c)
+		case detachCmd:
+			m.handleDetach(c)
+		case configureCmd:
+			m.handleConfigure(c)
+		case closeSessionCmd:
+			m.handleCloseSession(c)
 		}
-		s.bound[ident] = struct{}{}
-		m.mu.Unlock()
+	}
+}
 
-		if ident.IsRaw() {
-			if err := m.provisionRawStream(ident); err != nil {
-				return err
+// Command handlers, run in loop goroutine. With a single goroutine, no locking is needed.
+
+func (m *Manager) handleAddProvider(cmd addProviderCmd) {
+	if _, ok := m.providers[cmd.name]; ok {
+		cmd.resp <- fmt.Errorf("provider exists: %s", cmd.name)
+		return
+	}
+	if err := cmd.p.Start(); err != nil {
+		cmd.resp <- fmt.Errorf("start provider %s: %w", cmd.name, err)
+		return
+	}
+	m.providers[cmd.name] = cmd.p
+	cmd.resp <- nil
+}
+
+func (m *Manager) handleRemoveProvider(cmd removeProviderCmd) {
+	p, ok := m.providers[cmd.name]
+	if !ok {
+		cmd.resp <- fmt.Errorf("provider not found: %s", cmd.name)
+		return
+	}
+
+	// Clean all identifiers belonging to this provider. Iterates through sessions to reduce provider burden.
+	for _, s := range m.sessions {
+		for ident := range s.bound {
+			provName, subj, ok := ident.ProviderSubject()
+			if !ok || provName != cmd.name {
+				// TODO: add log warning, but basically should never ever happen
+				continue
+			}
+			if s.attached && s.clientOut != nil {
+				m.router.DeregisterRoute(ident, s.clientOut)
+			}
+			delete(s.bound, ident)
+
+			// decrementStreamRefCount returns true if this was the last ref. In which case we want to stop the stream.
+			if ident.IsRaw() && m.decrementStreamRefCount(ident) && subj != "" {
+				_ = p.StopStream(subj) // best-effort as we will remove the provider anyway
 			}
 		}
-		m.router.RegisterRoute(ident, out)
 	}
-	return nil
+
+	// first iteration above is sound, but as a precaution we also clean up any dangling streamRef entries here
+	for id := range m.streamRef {
+		provName, _, ok := id.ProviderSubject()
+		if !ok || provName != cmd.name {
+			continue
+		}
+		fmt.Printf("manager: warning — dangling streamRef for %s after removing provider %s\n", id.Key(), cmd.name)
+		delete(m.streamRef, id)
+	}
+
+	p.Stop()
+	delete(m.providers, cmd.name)
+	cmd.resp <- nil
 }
 
-func (m *Manager) Unsubscribe(id uuid.UUID, ids ...domain.Identifier) error {
-	m.mu.Lock()
-	s, ok := m.sessions[id]
-	if !ok {
-		m.mu.Unlock()
-		return ErrSessionNotFound
+func (m *Manager) handleNewSession(cmd newSessionCmd) {
+	s := &session{
+		id:        uuid.New(),
+		bound:     make(map[domain.Identifier]struct{}),
+		idleAfter: cmd.idleAfter,
 	}
-	out := s.internalOut
-	m.mu.Unlock()
 
-	for _, ident := range ids {
-		m.mu.Lock()
-		if _, exists := s.bound[ident]; !exists {
-			m.mu.Unlock()
-			continue
+	// Arm idle timer to auto-close the session.
+	s.idleTimer = time.AfterFunc(cmd.idleAfter, func() {
+		m.cmdCh <- closeSessionCmd{sid: s.id, resp: make(chan error, 1)}
+	})
+
+	m.sessions[s.id] = s // added after arming in the case of immediate timeout or error in arming timer
+
+	cmd.resp <- struct {
+		id  uuid.UUID
+		err error
+	}{id: s.id, err: nil}
+}
+
+func (m *Manager) handleAttach(cmd attachCmd) {
+	s, ok := m.sessions[cmd.sid]
+	if !ok {
+		cmd.resp <- struct {
+			cin  chan<- domain.Message
+			cout <-chan domain.Message
+			err  error
+		}{nil, nil, ErrSessionNotFound}
+		return
+	}
+	if s.closed {
+		cmd.resp <- struct {
+			cin  chan<- domain.Message
+			cout <-chan domain.Message
+			err  error
+		}{nil, nil, ErrSessionClosed}
+		return
+	}
+	if s.attached {
+		cmd.resp <- struct {
+			cin  chan<- domain.Message
+			cout <-chan domain.Message
+			err  error
+		}{nil, nil, ErrClientAlreadyAttached}
+		return
+	}
+
+	cin, cout, err := m.attachSession(s, cmd.inBuf, cmd.outBuf)
+
+	cmd.resp <- struct {
+		cin  chan<- domain.Message
+		cout <-chan domain.Message
+		err  error
+	}{cin, cout, err}
+}
+
+func (m *Manager) handleDetach(cmd detachCmd) {
+	s, ok := m.sessions[cmd.sid]
+	if !ok {
+		cmd.resp <- ErrSessionNotFound
+		return
+	}
+	if s.closed {
+		cmd.resp <- ErrSessionClosed
+		return
+	}
+	if !s.attached {
+		cmd.resp <- ErrClientNotAttached
+		return
+	}
+
+	_ = m.detachSession(cmd.sid, s)
+
+	cmd.resp <- nil
+}
+
+func (m *Manager) handleConfigure(c configureCmd) {
+	s, ok := m.sessions[c.sid]
+	if !ok {
+		c.resp <- ErrSessionNotFound
+		return
+	}
+	if s.closed {
+		c.resp <- ErrSessionClosed
+		return
+	}
+
+	old := copySet(s.bound)
+	toAdd, toDel := identifierSetDifferences(old, c.next)
+
+	// 1) Handle removals first.
+	for _, ident := range toDel {
+		if s.attached && s.clientOut != nil {
+			m.router.DeregisterRoute(ident, s.clientOut)
 		}
 		delete(s.bound, ident)
-		m.mu.Unlock()
 
-		m.router.DeregisterRoute(ident, out)
 		if ident.IsRaw() {
-			m.releaseRawStreamIfUnused(ident)
+			if m.decrementStreamRefCount(ident) {
+				if p, subj, err := m.resolveProvider(ident); err == nil {
+					_ = p.StopStream(subj) // fire-and-forget
+				}
+			}
 		}
 	}
-	return nil
-}
 
-func (m *Manager) SetSubscriptions(id uuid.UUID, next []domain.Identifier) error {
-	m.mu.Lock()
-	s, ok := m.sessions[id]
-	if !ok {
-		m.mu.Unlock()
-		return ErrSessionNotFound
+	// 2) Handle additions. Collect starts to await.
+	type startItem struct {
+		id domain.Identifier
+		ch <-chan error
 	}
-	old := make(map[domain.Identifier]struct{}, len(s.bound))
-	for k := range s.bound {
-		old[k] = struct{}{}
-	}
-	out := s.internalOut
-	m.mu.Unlock()
-
-	toAdd, toDel := m.identifierSetDifferences(old, next)
+	var starts []startItem
+	var initErrs []error
 
 	for _, ident := range toAdd {
-		m.mu.Lock()
+		// Bind intent now.
 		s.bound[ident] = struct{}{}
-		m.mu.Unlock()
 
-		if ident.IsRaw() {
-			if err := m.provisionRawStream(ident); err != nil {
-				return err
+		if !ident.IsRaw() {
+			if s.attached && s.clientOut != nil {
+				m.router.RegisterRoute(ident, s.clientOut)
 			}
+			continue
 		}
-		m.router.RegisterRoute(ident, out)
-	}
 
-	for _, ident := range toDel {
-		m.mu.Lock()
-		_, exists := s.bound[ident]
-		delete(s.bound, ident)
-		m.mu.Unlock()
-
-		if exists {
-			m.router.DeregisterRoute(ident, out)
-			if ident.IsRaw() {
-				m.releaseRawStreamIfUnused(ident)
-			}
+		p, subj, err := m.resolveProvider(ident)
+		if err != nil {
+			delete(s.bound, ident)
+			initErrs = append(initErrs, err)
+			continue
 		}
-	}
-	return nil
-}
+		if !p.IsValidSubject(subj, false) {
+			delete(s.bound, ident)
+			initErrs = append(initErrs, fmt.Errorf("invalid subject %q for provider", subj))
+			continue
+		}
 
-func (m *Manager) CloseSession(id uuid.UUID) error {
-	m.mu.Lock()
-	s, ok := m.sessions[id]
-	if !ok {
-		m.mu.Unlock()
-		return ErrSessionNotFound
-	}
-	if s.closed {
-		m.mu.Unlock()
-		return nil
-	}
-	s.closed = true
-	if s.idleTimer != nil {
-		s.idleTimer.Stop()
-		s.idleTimer = nil
-	}
-	out := s.internalOut
-	ids := make([]domain.Identifier, 0, len(s.bound))
-	for k := range s.bound {
-		ids = append(ids, k)
-	}
-	cancelInternal := s.cancelInternal
-	// Snapshot clientIn/Out for shutdown signals after unlock.
-	cin := s.clientIn
-	cout := s.clientOut
-	// Remove from map before unlock to prevent new work.
-	delete(m.sessions, id)
-	m.mu.Unlock()
+		first := m.incrementStreamRefCount(ident)
 
-	// Deregister all routes and release raw streams.
-	for _, ident := range ids {
-		m.router.DeregisterRoute(ident, out)
-		if ident.IsRaw() {
-			m.releaseRawStreamIfUnused(ident)
+		if first || !p.IsStreamActive(subj) {
+			ch := p.StartStream(subj, m.router.IncomingChannel())
+			starts = append(starts, startItem{id: ident, ch: ch})
+		} else if s.attached && s.clientOut != nil {
+			// Already active, just register for this session.
+			m.router.RegisterRoute(ident, s.clientOut)
 		}
 	}
 
-	// Stop inbound forwarder and close internals.
-	if cancelInternal != nil {
-		cancelInternal()
-	}
-	close(s.internalIn)  // end internalIn forwarder
-	close(s.internalOut) // signal drain to finish
-
-	// Wait drain exit, then close clientOut if attached at close time.
-	s.egressWG.Wait()
-	if cout != nil {
-		close(cout)
-	}
-	// Close clientIn to stop client writers if still attached.
-	if cin != nil {
-		close(cin)
-	}
-	return nil
-}
-
-func (m *Manager) AddProvider(name string, p provider.Provider) error {
-	m.mu.Lock()
-	if _, exists := m.providers[name]; exists {
-		m.mu.Unlock()
-		return fmt.Errorf("provider exists: %s", name)
-	}
-	m.mu.Unlock()
-
-	if err := p.Start(); err != nil {
-		return fmt.Errorf("start provider %s: %w", name, err)
-	}
-
-	m.mu.Lock()
-	m.providers[name] = p
-	m.mu.Unlock()
-	return nil
-}
-
-func (m *Manager) RemoveProvider(name string) error {
-	m.mu.Lock()
-	_, ok := m.providers[name]
-	m.mu.Unlock()
-	if !ok {
-		return fmt.Errorf("provider not found: %s", name)
-	}
-	// TODO: implement full drain and cancel of all streams for this provider if needed.
-	return fmt.Errorf("RemoveProvider not implemented")
-}
-
-func (m *Manager) provisionRawStream(id domain.Identifier) error {
-	providerName, subject, ok := id.ProviderSubject()
-	if !ok || providerName == "" || subject == "" {
-		return ErrInvalidIdentifier
-	}
-
-	m.mu.Lock()
-	prov, exists := m.providers[providerName]
-	if !exists {
-		m.mu.Unlock()
-		return ErrUnknownProvider
-	}
-	if !prov.IsValidSubject(subject, false) {
-		m.mu.Unlock()
-		return fmt.Errorf("invalid subject %q for provider %s", subject, providerName)
-	}
-
-	if ch, ok := m.providerStreams[id]; ok {
-		m.rawReferenceCount[id] = m.rawReferenceCount[id] + 1
-		m.mu.Unlock()
-		_ = ch
-		return nil
-	}
-
-	ch := make(chan domain.Message, 64)
-	if err := prov.RequestStream(subject, ch); err != nil {
-		m.mu.Unlock()
-		return fmt.Errorf("provision %v: %w", id, err)
-	}
-	m.providerStreams[id] = ch
-	m.rawReferenceCount[id] = 1
-	incoming := m.router.IncomingChannel()
-	m.mu.Unlock()
-
-	// Provider stream -> router.Incoming
-	go func(c chan domain.Message) {
-		for msg := range c {
-			incoming <- msg
-		}
-	}(ch)
-
-	return nil
-}
-
-func (m *Manager) releaseRawStreamIfUnused(id domain.Identifier) {
-	providerName, subject, ok := id.ProviderSubject()
-	if !ok {
+	// 3) Wait for starts initiated by this call, each with its own timeout.
+	if len(starts) == 0 {
+		c.resp <- join(initErrs)
 		return
 	}
 
-	m.mu.Lock()
-	rc := m.rawReferenceCount[id] - 1
-	if rc <= 0 {
-		if ch, ok := m.providerStreams[id]; ok {
-			if prov, exists := m.providers[providerName]; exists {
-				prov.CancelStream(subject)
-			}
-			close(ch)
-			delete(m.providerStreams, id)
-		}
-		delete(m.rawReferenceCount, id)
-		m.mu.Unlock()
-		return
+	type result struct {
+		id  domain.Identifier
+		err error
 	}
-	m.rawReferenceCount[id] = rc
-	m.mu.Unlock()
+	done := make(chan result, len(starts))
+
+	for _, si := range starts {
+		// Per-start waiter.
+		go func(id domain.Identifier, ch <-chan error) {
+			select {
+			case err := <-ch:
+				done <- result{id: id, err: err}
+			case <-time.After(statusWaitTotal):
+				done <- result{id: id, err: fmt.Errorf("timeout")}
+			}
+		}(si.id, si.ch)
+	}
+
+	// Collect results and apply.
+	for i := 0; i < len(starts); i++ {
+		r := <-done
+		if r.err != nil {
+			// Roll back this session's bind and drop ref.
+			delete(s.bound, r.id)
+			_ = m.decrementStreamRefCount(r.id)
+			initErrs = append(initErrs, fmt.Errorf("start %v: %w", r.id, r.err))
+			continue
+		}
+		// Success: register for any attached sessions that are bound.
+		for _, sess := range m.sessions {
+			if !sess.attached || sess.clientOut == nil {
+				continue
+			}
+			if _, bound := sess.bound[r.id]; bound {
+				m.router.RegisterRoute(r.id, sess.clientOut)
+			}
+		}
+	}
+
+	c.resp <- join(initErrs)
 }
 
-func (m *Manager) identifierSetDifferences(old map[domain.Identifier]struct{}, next []domain.Identifier) (toAdd, toDel []domain.Identifier) {
-	newSet := make(map[domain.Identifier]struct{}, len(next))
-	for _, id := range next {
-		newSet[id] = struct{}{}
-		if _, ok := old[id]; !ok {
-			toAdd = append(toAdd, id)
-		}
+func (m *Manager) handleCloseSession(c closeSessionCmd) {
+	s, ok := m.sessions[c.sid]
+	if !ok {
+		c.resp <- ErrSessionNotFound
+		return
 	}
-	for id := range old {
-		if _, ok := newSet[id]; !ok {
-			toDel = append(toDel, id)
-		}
-	}
-	return
+	m.closeSession(c.sid, s)
+	c.resp <- nil
 }

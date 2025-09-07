@@ -13,9 +13,9 @@ type Router struct {
 	mu       sync.RWMutex
 }
 
-func NewRouter() *Router {
+func NewRouter(buffer int) *Router {
 	return &Router{
-		incoming: make(chan domain.Message, 512), // Buffered channel for incoming messages
+		incoming: make(chan domain.Message, buffer), // Buffered channel for incoming messages
 		routes:   make(map[domain.Identifier][]chan<- domain.Message),
 	}
 }
@@ -33,7 +33,7 @@ func (r *Router) Run() {
 			select {
 			case ch <- msg:
 			default:
-				fmt.Println("Dropped message, buffer full!!!") // TODO: Handle full buffer case more gracefully
+				fmt.Println("Router could not push message to a full buffer...") // TODO: Handle full buffer case more gracefully
 			}
 		}
 		r.mu.RUnlock()
