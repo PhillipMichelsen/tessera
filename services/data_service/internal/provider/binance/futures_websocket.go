@@ -1,643 +1,410 @@
 package binance
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"net/http"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/gorilla/websocket"
+	"github.com/coder/websocket"
 	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/domain"
 )
 
 const (
-	wsURL              = "wss://fstream.binance.com/stream"
-	writeRatePerSecond = 8               // hard cap per second
-	writeBurst         = 8               // token bucket burst
-	writeWait          = 5 * time.Second // per write deadline
+	endpoint = "wss://stream.binance.com:9443/stream"
+	cmpName  = "binance_futures_websocket"
 
-	batchPeriod = 1 * time.Second // batch SUB/UNSUB every second
-
-	reconnectMin = 500 * time.Millisecond
-	reconnectMax = 10 * time.Second
+	// I/O limits
+	readLimitBytes      = 8 << 20
+	writeTimeout        = 5 * time.Second
+	dialTimeout         = 10 * time.Second
+	reconnectMaxBackoff = 30 * time.Second
 )
 
-// internal stream states (provider stays simple; manager relies on IsStreamActive)
-type streamState uint8
+type wsReq struct {
+	Method string   `json:"method"`
+	Params []string `json:"params,omitempty"`
+	ID     uint64   `json:"id"`
+}
 
-const (
-	stateUnknown streamState = iota
-	statePendingSub
-	stateActive
-	statePendingUnsub
-	stateInactive
-	stateError
-)
+type wsAck struct {
+	Result any    `json:"result"`
+	ID     uint64 `json:"id"`
+}
+
+type combinedEvent struct {
+	Stream string          `json:"stream"`
+	Data   json.RawMessage `json:"data"`
+}
 
 type FuturesWebsocket struct {
-	dial websocket.Dialer
-	hdr  http.Header
+	out chan<- domain.Message
 
-	// desired subscriptions and sinks
-	mu      sync.Mutex
-	desired map[string]bool                  // subject -> want subscribed
-	sinks   map[string]chan<- domain.Message // subject -> destination
-	states  map[string]streamState           // subject -> state
+	mu     sync.RWMutex
+	active map[string]bool
 
-	// waiters per subject
-	startWaiters map[string][]chan error
-	stopWaiters  map[string][]chan error
+	connMu sync.Mutex
+	conn   *websocket.Conn
+	cancel context.CancelFunc
 
-	// batching queues
-	subQ   chan string
-	unsubQ chan string
+	reqID   atomic.Uint64
+	pending map[uint64]chan error
+	pmu     sync.Mutex
 
-	// websocket
-	writeMu sync.Mutex
-	conn    *websocket.Conn
-
-	// rate limit tokens
-	tokensCh chan struct{}
-	stopRate chan struct{}
-
-	// lifecycle
+	// pumps
+	writer chan []byte
+	once   sync.Once
 	stopCh chan struct{}
-	wg     sync.WaitGroup
-
-	// ack tracking
-	ackMu    sync.Mutex
-	idSeq    uint64
-	pendingA map[int64]ackBatch
 }
 
-type ackBatch struct {
-	method   string // "SUBSCRIBE" or "UNSUBSCRIBE"
-	subjects []string
-}
-
-func NewFuturesWebsocket() *FuturesWebsocket {
+func NewFuturesWebsocket(out chan<- domain.Message) *FuturesWebsocket {
 	return &FuturesWebsocket{
-		desired:      make(map[string]bool),
-		sinks:        make(map[string]chan<- domain.Message),
-		states:       make(map[string]streamState),
-		startWaiters: make(map[string][]chan error),
-		stopWaiters:  make(map[string][]chan error),
-		subQ:         make(chan string, 4096),
-		unsubQ:       make(chan string, 4096),
-		tokensCh:     make(chan struct{}, writeBurst),
-		stopRate:     make(chan struct{}),
-		stopCh:       make(chan struct{}),
-		pendingA:     make(map[int64]ackBatch),
+		out:     out,
+		active:  make(map[string]bool),
+		pending: make(map[uint64]chan error),
+		writer:  make(chan []byte, 256),
+		stopCh:  make(chan struct{}),
 	}
 }
 
-/* provider.Provider */
+func (p *FuturesWebsocket) Start() error {
+	var startErr error
+	p.once.Do(func() {
+		go p.run()
+	})
+	return startErr
+}
 
-func (b *FuturesWebsocket) Start() error {
-	// token bucket
-	b.wg.Add(1)
+func (p *FuturesWebsocket) Stop() {
+	close(p.stopCh)
+	p.connMu.Lock()
+	if p.cancel != nil {
+		p.cancel()
+	}
+	if p.conn != nil {
+		_ = p.conn.Close(websocket.StatusNormalClosure, "shutdown")
+		p.conn = nil
+	}
+	p.connMu.Unlock()
+
+	// fail pending waiters
+	p.pmu.Lock()
+	for id, ch := range p.pending {
+		ch <- errors.New("provider stopped")
+		close(ch)
+		delete(p.pending, id)
+	}
+	p.pmu.Unlock()
+
+	slog.Default().Info("stopped", "cmp", cmpName)
+}
+
+func (p *FuturesWebsocket) StartStreams(keys []string) <-chan error {
+	ch := make(chan error, 1)
 	go func() {
-		defer b.wg.Done()
-		t := time.NewTicker(time.Second / writeRatePerSecond)
-		defer t.Stop()
-		// prime burst
-		for i := 0; i < writeBurst; i++ {
-			select {
-			case b.tokensCh <- struct{}{}:
-			default:
-			}
+		defer close(ch)
+		if len(keys) == 0 {
+			ch <- nil
+			return
 		}
-		for {
-			select {
-			case <-b.stopRate:
-				return
-			case <-t.C:
-				select {
-				case b.tokensCh <- struct{}{}:
-				default:
+		id, ack := p.sendReq("SUBSCRIBE", keys)
+		if ack == nil {
+			ch <- errors.New("not connected")
+			slog.Default().Error("subscribe failed; not connected", "cmp", cmpName, "keys", keys)
+			return
+		}
+		if err := <-ack; err != nil {
+			ch <- err
+			slog.Default().Error("subscribe NACK", "cmp", cmpName, "id", id, "keys", keys, "err", err)
+			return
+		}
+		p.mu.Lock()
+		for _, k := range keys {
+			p.active[k] = true
+		}
+		p.mu.Unlock()
+		slog.Default().Info("subscribed", "cmp", cmpName, "id", id, "keys", keys)
+		ch <- nil
+	}()
+	return ch
+}
+
+func (p *FuturesWebsocket) StopStreams(keys []string) <-chan error {
+	ch := make(chan error, 1)
+	go func() {
+		defer close(ch)
+		if len(keys) == 0 {
+			ch <- nil
+			return
+		}
+		id, ack := p.sendReq("UNSUBSCRIBE", keys)
+		if ack == nil {
+			ch <- errors.New("not connected")
+			slog.Default().Error("unsubscribe failed; not connected", "cmp", cmpName, "keys", keys)
+			return
+		}
+		if err := <-ack; err != nil {
+			ch <- err
+			slog.Default().Error("unsubscribe NACK", "cmp", cmpName, "id", id, "keys", keys, "err", err)
+			return
+		}
+		p.mu.Lock()
+		for _, k := range keys {
+			delete(p.active, k)
+		}
+		p.mu.Unlock()
+		slog.Default().Info("unsubscribed", "cmp", cmpName, "id", id, "keys", keys)
+		ch <- nil
+	}()
+	return ch
+}
+
+func (p *FuturesWebsocket) Fetch(key string) (domain.Message, error) {
+	return domain.Message{}, errors.New("not implemented")
+}
+
+func (p *FuturesWebsocket) IsStreamActive(key string) bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.active[key]
+}
+
+func (p *FuturesWebsocket) IsValidSubject(key string, _ bool) bool {
+	return len(key) > 0
+}
+
+// internal
+
+func (p *FuturesWebsocket) run() {
+	backoff := time.Second
+
+	for {
+		// stop?
+		select {
+		case <-p.stopCh:
+			return
+		default:
+		}
+
+		if err := p.connect(); err != nil {
+			slog.Default().Error("dial failed", "cmp", cmpName, "err", err)
+			time.Sleep(backoff)
+			if backoff < reconnectMaxBackoff {
+				backoff *= 2
+			}
+			continue
+		}
+		backoff = time.Second
+
+		// resubscribe existing keys
+		func() {
+			p.mu.RLock()
+			if len(p.active) > 0 {
+				keys := make([]string, 0, len(p.active))
+				for k := range p.active {
+					keys = append(keys, k)
+				}
+				_, ack := p.sendReq("SUBSCRIBE", keys)
+				if ack != nil {
+					if err := <-ack; err != nil {
+						slog.Default().Warn("resubscribe error", "cmp", cmpName, "err", err)
+					} else {
+						slog.Default().Info("resubscribed", "cmp", cmpName, "count", len(keys))
+					}
 				}
 			}
+			p.mu.RUnlock()
+		}()
+
+		// run read and write pumps
+		ctx, cancel := context.WithCancel(context.Background())
+		errc := make(chan error, 2)
+		go func() { errc <- p.readLoop(ctx) }()
+		go func() { errc <- p.writeLoop(ctx) }()
+
+		// wait for failure or stop
+		var err error
+		select {
+		case <-p.stopCh:
+			cancel()
+			p.cleanupConn()
+			return
+		case err = <-errc:
+			cancel()
 		}
-	}()
 
-	// connection manager
-	b.wg.Add(1)
-	go b.run()
+		// fail pendings on error
+		p.pmu.Lock()
+		for id, ch := range p.pending {
+			ch <- err
+			close(ch)
+			delete(p.pending, id)
+		}
+		p.pmu.Unlock()
 
-	// batcher
-	b.wg.Add(1)
-	go b.batcher()
+		slog.Default().Error("ws loop error; reconnecting", "cmp", cmpName, "err", err)
+		p.cleanupConn()
+	}
+}
 
+func (p *FuturesWebsocket) connect() error {
+	p.connMu.Lock()
+	defer p.connMu.Unlock()
+	if p.conn != nil {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+
+	c, _, err := websocket.Dial(ctx, endpoint, &websocket.DialOptions{
+		CompressionMode: websocket.CompressionDisabled,
+		OnPingReceived: func(ctx context.Context, _ []byte) bool {
+			slog.Default().Info("ping received", "cmp", cmpName)
+			return true
+		},
+	})
+	if err != nil {
+		cancel()
+		return err
+	}
+
+	c.SetReadLimit(8 << 20)
+
+	p.conn = c
+	p.cancel = cancel
+	slog.Default().Info("connected", "cmp", cmpName, "endpoint", endpoint)
 	return nil
 }
 
-func (b *FuturesWebsocket) Stop() {
-	close(b.stopCh)
-	close(b.stopRate)
-
-	b.writeMu.Lock()
-	if b.conn != nil {
-		_ = b.conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "bye"))
-		_ = b.conn.Close()
-		b.conn = nil
+func (p *FuturesWebsocket) cleanupConn() {
+	p.connMu.Lock()
+	defer p.connMu.Unlock()
+	if p.cancel != nil {
+		p.cancel()
+		p.cancel = nil
 	}
-	b.writeMu.Unlock()
-
-	b.wg.Wait()
-
-	// resolve any remaining waiters with an error
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	for subj, ws := range b.startWaiters {
-		for _, ch := range ws {
-			select {
-			case ch <- errors.New("provider stopped"):
-			default:
-			}
-			close(ch)
-		}
-		delete(b.startWaiters, subj)
-	}
-	for subj, ws := range b.stopWaiters {
-		for _, ch := range ws {
-			select {
-			case ch <- errors.New("provider stopped"):
-			default:
-			}
-			close(ch)
-		}
-		delete(b.stopWaiters, subj)
+	if p.conn != nil {
+		_ = p.conn.Close(websocket.StatusAbnormalClosure, "reconnect")
+		p.conn = nil
 	}
 }
 
-func (b *FuturesWebsocket) StartStream(subject string, dst chan<- domain.Message) <-chan error {
-	fmt.Println("Starting stream for subject:", subject)
-	ch := make(chan error, 1)
-
-	if subject == "" {
-		ch <- fmt.Errorf("empty subject")
-		close(ch)
-		return ch
-	}
-
-	b.mu.Lock()
-	// mark desired, update sink
-	b.desired[subject] = true
-	b.sinks[subject] = dst
-
-	// fast path: already active
-	if b.states[subject] == stateActive {
-		b.mu.Unlock()
-		ch <- nil
-		close(ch)
-		return ch
-	}
-
-	// enqueue waiter and transition if needed
-	b.startWaiters[subject] = append(b.startWaiters[subject], ch)
-	if b.states[subject] != statePendingSub {
-		b.states[subject] = statePendingSub
-		select {
-		case b.subQ <- subject:
-		default:
-			// queue full → fail fast
-			ws := b.startWaiters[subject]
-			delete(b.startWaiters, subject)
-			b.states[subject] = stateError
-			b.mu.Unlock()
-			for _, w := range ws {
-				w <- fmt.Errorf("subscribe queue full")
-				close(w)
-			}
-			return ch
-		}
-	}
-	b.mu.Unlock()
-	return ch
-}
-
-func (b *FuturesWebsocket) StopStream(subject string) <-chan error {
-	fmt.Println("Stopping stream for subject:", subject)
-	ch := make(chan error, 1)
-
-	if subject == "" {
-		ch <- fmt.Errorf("empty subject")
-		close(ch)
-		return ch
-	}
-
-	b.mu.Lock()
-	// mark no longer desired; keep sink until UNSUB ack to avoid drops
-	b.desired[subject] = false
-
-	// already inactive
-	if b.states[subject] == stateInactive {
-		b.mu.Unlock()
-		ch <- nil
-		close(ch)
-		return ch
-	}
-
-	// enqueue waiter and transition if needed
-	b.stopWaiters[subject] = append(b.stopWaiters[subject], ch)
-	if b.states[subject] != statePendingUnsub {
-		b.states[subject] = statePendingUnsub
-		select {
-		case b.unsubQ <- subject:
-		default:
-			// queue full → fail fast
-			ws := b.stopWaiters[subject]
-			delete(b.stopWaiters, subject)
-			b.states[subject] = stateError
-			b.mu.Unlock()
-			for _, w := range ws {
-				w <- fmt.Errorf("unsubscribe queue full")
-				close(w)
-			}
-			return ch
-		}
-	}
-	b.mu.Unlock()
-	return ch
-}
-
-func (b *FuturesWebsocket) Fetch(_ string) (domain.Message, error) {
-	return domain.Message{}, fmt.Errorf("fetch not supported")
-}
-
-func (b *FuturesWebsocket) IsStreamActive(subject string) bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.states[subject] == stateActive
-}
-
-func (b *FuturesWebsocket) IsValidSubject(subject string, isFetch bool) bool {
-	return !isFetch && subject != ""
-}
-
-/* internals */
-
-func (b *FuturesWebsocket) run() {
-	defer b.wg.Done()
-
-	backoff := reconnectMin
-
-	dial := func() (*websocket.Conn, error) {
-		c, _, err := b.dial.Dial(wsURL, b.hdr)
-		if err != nil {
-			return nil, err
-		}
-		return c, nil
-	}
-
+func (p *FuturesWebsocket) writeLoop(ctx context.Context) error {
 	for {
 		select {
-		case <-b.stopCh:
-			return
-		default:
-		}
+		case <-ctx.Done():
+			return ctx.Err()
 
-		c, err := dial()
-		if err != nil {
-			time.Sleep(backoff)
-			backoff = minDur(backoff*2, reconnectMax)
-			continue
-		}
-		backoff = reconnectMin
-
-		b.writeMu.Lock()
-		b.conn = c
-		b.writeMu.Unlock()
-
-		// Resubscribe desired subjects in one batched SUB.
-		want := b.snapshotDesired(true) // only desired==true
-		if len(want) > 0 {
-			_ = b.sendSubscribe(want)
-			b.mu.Lock()
-			for _, s := range want {
-				if b.states[s] != stateActive {
-					b.states[s] = statePendingSub
-				}
+		case b := <-p.writer:
+			p.connMu.Lock()
+			c := p.conn
+			p.connMu.Unlock()
+			if c == nil {
+				return errors.New("conn nil")
 			}
-			b.mu.Unlock()
-		}
-
-		err = b.readLoop(c)
-
-		// tear down connection
-		b.writeMu.Lock()
-		if b.conn != nil {
-			_ = b.conn.Close()
-			b.conn = nil
-		}
-		b.writeMu.Unlock()
-
-		select {
-		case <-b.stopCh:
-			return
-		default:
-			time.Sleep(backoff)
-			backoff = minDur(backoff*2, reconnectMax)
+			wctx, cancel := context.WithTimeout(ctx, writeTimeout)
+			err := c.Write(wctx, websocket.MessageText, b)
+			cancel()
+			if err != nil {
+				return err
+			}
 		}
 	}
 }
 
-func (b *FuturesWebsocket) batcher() {
-	defer b.wg.Done()
-
-	t := time.NewTicker(batchPeriod)
-	defer t.Stop()
-
-	var subs, unsubs []string
-
-	flush := func() {
-		if len(subs) > 0 {
-			_ = b.sendSubscribe(subs)
-			subs = subs[:0]
-		}
-		if len(unsubs) > 0 {
-			_ = b.sendUnsubscribe(unsubs)
-			unsubs = unsubs[:0]
-		}
-	}
+func (p *FuturesWebsocket) readLoop(ctx context.Context) error {
+	slog.Default().Info("read loop started", "cmp", cmpName)
+	defer slog.Default().Info("read loop exited", "cmp", cmpName)
 
 	for {
-		select {
-		case <-b.stopCh:
-			return
-		case s := <-b.subQ:
-			if s != "" {
-				subs = append(subs, s)
-			}
-		case s := <-b.unsubQ:
-			if s != "" {
-				unsubs = append(unsubs, s)
-			}
-		case <-t.C:
-			flush()
+		p.connMu.Lock()
+		c := p.conn
+		p.connMu.Unlock()
+		if c == nil {
+			return errors.New("conn nil")
 		}
-	}
-}
 
-func (b *FuturesWebsocket) readLoop(c *websocket.Conn) error {
-	for {
-		_, raw, err := c.ReadMessage()
+		_, data, err := c.Read(ctx)
 		if err != nil {
 			return err
 		}
 
-		fmt.Println("Received message:", string(raw))
-
-		// Stream data or command ack
-		if hasField(raw, `"stream"`) {
-			var container struct {
-				Stream string          `json:"stream"`
-				Data   json.RawMessage `json:"data"`
+		// ACK
+		var ack wsAck
+		if json.Unmarshal(data, &ack) == nil && ack.ID != 0 {
+			p.pmu.Lock()
+			if ch, ok := p.pending[ack.ID]; ok {
+				if ack.Result == nil {
+					ch <- nil
+					slog.Default().Debug("ack ok", "cmp", cmpName, "id", ack.ID)
+				} else {
+					resb, _ := json.Marshal(ack.Result)
+					ch <- errors.New(string(resb))
+					slog.Default().Warn("ack error", "cmp", cmpName, "id", ack.ID, "result", string(resb))
+				}
+				close(ch)
+				delete(p.pending, ack.ID)
+			} else {
+				slog.Default().Warn("ack with unknown id", "cmp", cmpName, "id", ack.ID)
 			}
-			if err := json.Unmarshal(raw, &container); err != nil || container.Stream == "" {
-				continue
-			}
+			p.pmu.Unlock()
+			continue
+		}
 
-			b.mu.Lock()
-			dst, ok := b.sinks[container.Stream]
-			st := b.states[container.Stream]
-			b.mu.Unlock()
-
-			if !ok || st == stateInactive || st == statePendingUnsub {
-				continue
-			}
-
-			id, err := domain.RawID("binance_futures_websocket", container.Stream)
-			if err != nil {
-				continue
-			}
+		// Combined stream payload
+		var evt combinedEvent
+		if json.Unmarshal(data, &evt) == nil && evt.Stream != "" {
+			ident, _ := domain.RawID(cmpName, evt.Stream)
 			msg := domain.Message{
-				Identifier: id,
-				Payload:    container.Data,
-				Encoding:   domain.EncodingJSON,
+				Identifier: ident,
+				Payload:    evt.Data,
 			}
-
 			select {
-			case dst <- msg:
+			case p.out <- msg:
 			default:
-				// drop on backpressure
+				slog.Default().Warn("dropping message since router buffer full", "cmp", cmpName, "stream", evt.Stream)
 			}
 			continue
 		}
 
-		// Ack path
-		var ack struct {
-			Result json.RawMessage `json:"result"`
-			ID     int64           `json:"id"`
-		}
-		if err := json.Unmarshal(raw, &ack); err != nil || ack.ID == 0 {
-			continue
-		}
-
-		b.ackMu.Lock()
-		batch, ok := b.pendingA[ack.ID]
-		if ok {
-			delete(b.pendingA, ack.ID)
-		}
-		b.ackMu.Unlock()
-		if !ok {
-			continue
-		}
-
-		ackErr := (len(ack.Result) > 0 && string(ack.Result) != "null")
-
-		switch batch.method {
-		case "SUBSCRIBE":
-			b.mu.Lock()
-			for _, s := range batch.subjects {
-				if ackErr {
-					b.states[s] = stateError
-					// fail all start waiters
-					ws := b.startWaiters[s]
-					delete(b.startWaiters, s)
-					b.mu.Unlock()
-					for _, ch := range ws {
-						ch <- fmt.Errorf("subscribe failed")
-						close(ch)
-					}
-					b.mu.Lock()
-					continue
-				}
-				// success
-				b.states[s] = stateActive
-				ws := b.startWaiters[s]
-				delete(b.startWaiters, s)
-				dst := b.sinks[s]
-				b.mu.Unlock()
-
-				for _, ch := range ws {
-					ch <- nil
-					close(ch)
-				}
-				_ = dst // messages will flow via readLoop
-				b.mu.Lock()
-			}
-			b.mu.Unlock()
-
-		case "UNSUBSCRIBE":
-			b.mu.Lock()
-			for _, s := range batch.subjects {
-				if ackErr {
-					b.states[s] = stateError
-					ws := b.stopWaiters[s]
-					delete(b.stopWaiters, s)
-					b.mu.Unlock()
-					for _, ch := range ws {
-						ch <- fmt.Errorf("unsubscribe failed")
-						close(ch)
-					}
-					b.mu.Lock()
-					continue
-				}
-				// success
-				b.states[s] = stateInactive
-				delete(b.sinks, s) // stop delivering
-				ws := b.stopWaiters[s]
-				delete(b.stopWaiters, s)
-				b.mu.Unlock()
-				for _, ch := range ws {
-					ch <- nil
-					close(ch)
-				}
-				b.mu.Lock()
-			}
-			b.mu.Unlock()
+		// Unknown frame
+		const maxSample = 512
+		if len(data) > maxSample {
+			slog.Default().Debug("unparsed frame", "cmp", cmpName, "size", len(data))
+		} else {
+			slog.Default().Debug("unparsed frame", "cmp", cmpName, "size", len(data), "body", string(data))
 		}
 	}
 }
 
-func (b *FuturesWebsocket) nextID() int64 {
-	return int64(atomic.AddUint64(&b.idSeq, 1))
-}
-
-func (b *FuturesWebsocket) sendSubscribe(subjects []string) error {
-	if len(subjects) == 0 {
-		return nil
-	}
-	id := b.nextID()
-	req := map[string]any{
-		"method": "SUBSCRIBE",
-		"params": subjects,
-		"id":     id,
-	}
-	if err := b.writeJSON(req); err != nil {
-		// mark error and fail waiters
-		b.mu.Lock()
-		for _, s := range subjects {
-			b.states[s] = stateError
-			ws := b.startWaiters[s]
-			delete(b.startWaiters, s)
-			b.mu.Unlock()
-			for _, ch := range ws {
-				ch <- fmt.Errorf("subscribe send failed")
-				close(ch)
-			}
-			b.mu.Lock()
-		}
-		b.mu.Unlock()
-		return err
-	}
-	b.ackMu.Lock()
-	b.pendingA[id] = ackBatch{method: "SUBSCRIBE", subjects: append([]string(nil), subjects...)}
-	b.ackMu.Unlock()
-	return nil
-}
-
-func (b *FuturesWebsocket) sendUnsubscribe(subjects []string) error {
-	if len(subjects) == 0 {
-		return nil
-	}
-	id := b.nextID()
-	req := map[string]any{
-		"method": "UNSUBSCRIBE",
-		"params": subjects,
-		"id":     id,
-	}
-	if err := b.writeJSON(req); err != nil {
-		b.mu.Lock()
-		for _, s := range subjects {
-			b.states[s] = stateError
-			ws := b.stopWaiters[s]
-			delete(b.stopWaiters, s)
-			b.mu.Unlock()
-			for _, ch := range ws {
-				ch <- fmt.Errorf("unsubscribe send failed")
-				close(ch)
-			}
-			b.mu.Lock()
-		}
-		b.mu.Unlock()
-		return err
-	}
-	b.ackMu.Lock()
-	b.pendingA[id] = ackBatch{method: "UNSUBSCRIBE", subjects: append([]string(nil), subjects...)}
-	b.ackMu.Unlock()
-	return nil
-}
-
-func (b *FuturesWebsocket) writeJSON(v any) error {
-	// token bucket
-	select {
-	case <-b.stopCh:
-		return fmt.Errorf("stopped")
-	case <-b.tokensCh:
-	}
-
-	b.writeMu.Lock()
-	c := b.conn
-	b.writeMu.Unlock()
+func (p *FuturesWebsocket) sendReq(method string, params []string) (uint64, <-chan error) {
+	p.connMu.Lock()
+	c := p.conn
+	p.connMu.Unlock()
 	if c == nil {
-		return fmt.Errorf("not connected")
+		return 0, nil
 	}
 
-	_ = c.SetWriteDeadline(time.Now().Add(writeWait))
-	return c.WriteJSON(v)
-}
+	id := p.reqID.Add(1)
+	req := wsReq{Method: method, Params: params, ID: id}
+	b, _ := json.Marshal(req)
 
-/* utilities */
+	ack := make(chan error, 1)
+	p.pmu.Lock()
+	p.pending[id] = ack
+	p.pmu.Unlock()
 
-func (b *FuturesWebsocket) snapshotDesired(onlyTrue bool) []string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	var out []string
-	for s, want := range b.desired {
-		if !onlyTrue || want {
-			out = append(out, s)
-		}
+	// enqueue to single writer to avoid concurrent writes
+	select {
+	case p.writer <- b:
+	default:
+		// avoid blocking the caller; offload
+		go func() { p.writer <- b }()
 	}
-	return out
-}
 
-func minDur(a, b time.Duration) time.Duration {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func hasField(raw []byte, needle string) bool {
-	// cheap check; avoids another allocation if it's obviously an ACK
-	return json.Valid(raw) && byteContains(raw, needle)
-}
-
-func byteContains(b []byte, sub string) bool {
-	n := len(sub)
-	if n == 0 || len(b) < n {
-		return false
-	}
-	// naive search; sufficient for small frames
-	for i := 0; i <= len(b)-n; i++ {
-		if string(b[i:i+n]) == sub {
-			return true
-		}
-	}
-	return false
+	slog.Default().Debug("request enqueued", "cmp", cmpName, "id", id, "method", method, "params", params)
+	return id, ack
 }

@@ -46,7 +46,6 @@ func (s *GRPCStreamingServer) ConnectStream(req *pb.ConnectStreamRequest, stream
 			if err := stream.Send(&pb.Message{
 				Identifier: &pb.Identifier{Key: msg.Identifier.Key()},
 				Payload:    msg.Payload,
-				Encoding:   string(msg.Encoding),
 			}); err != nil {
 				return err
 			}

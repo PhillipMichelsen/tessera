@@ -11,7 +11,7 @@ import (
 // Shared constants.
 const (
 	defaultClientBuf = 256
-	statusWaitTotal  = 8 * time.Second
+	statusWaitTotal  = 10 * time.Second
 )
 
 // Manager-level errors.
@@ -23,21 +23,6 @@ var (
 	ErrInvalidIdentifier     = errorf("invalid identifier")
 	ErrUnknownProvider       = errorf("unknown provider")
 )
-
-// Session holds per-session state. Owned by the manager loop.
-type session struct {
-	id uuid.UUID
-
-	clientIn  chan domain.Message // caller writes
-	clientOut chan domain.Message // caller reads
-
-	bound map[domain.Identifier]struct{}
-
-	closed    bool
-	attached  bool
-	idleAfter time.Duration
-	idleTimer *time.Timer
-}
 
 // Commands posted into the manager loop. One struct per action.
 type addProviderCmd struct {

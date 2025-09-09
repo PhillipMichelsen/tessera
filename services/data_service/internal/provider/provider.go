@@ -6,8 +6,8 @@ type Provider interface {
 	Start() error
 	Stop()
 
-	StartStream(key string, destination chan<- domain.Message) <-chan error
-	StopStream(key string) <-chan error
+	StartStreams(keys []string) <-chan error
+	StopStreams(key []string) <-chan error
 
 	Fetch(key string) (domain.Message, error)
 

@@ -1,10 +1,12 @@
 package main
 
 import (
-	"fmt"
-	"log"
+	"log/slog"
 	"net"
+	"os"
+	"time"
 
+	"github.com/lmittmann/tint"
 	pb "gitlab.michelsen.id/phillmichelsen/tessera/pkg/pb/data_service"
 	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/manager"
 	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/provider/binance"
@@ -14,26 +16,67 @@ import (
 	"google.golang.org/grpc/reflection"
 )
 
+func initLogger() *slog.Logger {
+	level := parseLevel(env("LOG_LEVEL", "debug"))
+	if env("LOG_FORMAT", "pretty") == "json" {
+		return slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+			Level: level,
+		}))
+	}
+	return slog.New(tint.NewHandler(os.Stdout, &tint.Options{
+		Level:      level,
+		TimeFormat: time.RFC3339Nano,
+		NoColor:    os.Getenv("NO_COLOR") != "",
+	}))
+}
+
+func parseLevel(s string) slog.Level {
+	switch s {
+	case "debug":
+		return slog.LevelDebug
+	case "warn":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
+}
+
+func env(k, def string) string {
+	if v := os.Getenv(k); v != "" {
+		return v
+	}
+	return def
+}
+
 func main() {
-	fmt.Println("Starting Data Service...")
+	slog.SetDefault(initLogger())
+	slog.Info("starting", "svc", "data-service")
+
 	// Setup
 	r := router.NewRouter(2048)
 	m := manager.NewManager(r)
-	binanceFutures := binance.NewFuturesWebsocket()
-	_ = m.AddProvider("binance_futures_websocket", binanceFutures)
+	binanceFutures := binance.NewFuturesWebsocket(r.IncomingChannel())
+	if err := m.AddProvider("binance_futures_websocket", binanceFutures); err != nil {
+		slog.Error("add provider failed", "err", err)
+		os.Exit(1)
+	}
 
 	// gRPC Control Server
 	grpcControlServer := grpc.NewServer()
 	go func() {
 		pb.RegisterDataServiceControlServer(grpcControlServer, server.NewGRPCControlServer(m))
 		reflection.Register(grpcControlServer)
-		grpcLis, err := net.Listen("tcp", ":50051")
+		lis, err := net.Listen("tcp", ":50051")
 		if err != nil {
-			log.Fatalf("Failed to listen for gRPC control: %v", err)
+			slog.Error("listen failed", "cmp", "grpc-control", "addr", ":50051", "err", err)
+			os.Exit(1)
 		}
-		log.Println("gRPC control server listening on :50051")
-		if err := grpcControlServer.Serve(grpcLis); err != nil {
-			log.Fatalf("Failed to serve gRPC control: %v", err)
+		slog.Info("listening", "cmp", "grpc-control", "addr", ":50051")
+		if err := grpcControlServer.Serve(lis); err != nil {
+			slog.Error("serve failed", "cmp", "grpc-control", "err", err)
+			os.Exit(1)
 		}
 	}()
 
@@ -42,31 +85,17 @@ func main() {
 	go func() {
 		pb.RegisterDataServiceStreamingServer(grpcStreamingServer, server.NewGRPCStreamingServer(m))
 		reflection.Register(grpcStreamingServer)
-		grpcLis, err := net.Listen("tcp", ":50052")
+		lis, err := net.Listen("tcp", ":50052")
 		if err != nil {
-			log.Fatalf("Failed to listen for gRPC: %v", err)
+			slog.Error("listen failed", "cmp", "grpc-streaming", "addr", ":50052", "err", err)
+			os.Exit(1)
 		}
-		log.Println("gRPC streaming server listening on :50052")
-		if err := grpcStreamingServer.Serve(grpcLis); err != nil {
-			log.Fatalf("Failed to serve gRPC: %v", err)
+		slog.Info("listening", "cmp", "grpc-streaming", "addr", ":50052")
+		if err := grpcStreamingServer.Serve(lis); err != nil {
+			slog.Error("serve failed", "cmp", "grpc-streaming", "err", err)
+			os.Exit(1)
 		}
 	}()
 
-	// Socket Streaming Server
-	/*
-		socketStreamingServer := server.NewSocketStreamingServer(m)
-		go func() {
-			socketLis, err := net.Listen("tcp", ":6000")
-			if err != nil {
-				log.Fatalf("Failed to listen for socket: %v", err)
-			}
-			log.Println("Socket server listening on :6000")
-			if err := socketStreamingServer.Serve(socketLis); err != nil {
-				log.Fatalf("Socket server error: %v", err)
-			}
-		}()
-	*/
-
-	// Block main forever
 	select {}
 }

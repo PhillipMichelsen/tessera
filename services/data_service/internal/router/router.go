@@ -1,7 +1,7 @@
 package router
 
 import (
-	"fmt"
+	"log/slog"
 	"sync"
 
 	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/domain"
@@ -25,6 +25,7 @@ func (r *Router) IncomingChannel() chan<- domain.Message {
 }
 
 func (r *Router) Run() {
+	slog.Default().Info("router started", "cmp", "router")
 	for msg := range r.incoming {
 		r.mu.RLock()
 		channels := r.routes[msg.Identifier]
@@ -33,7 +34,7 @@ func (r *Router) Run() {
 			select {
 			case ch <- msg:
 			default:
-				fmt.Println("Router could not push message to a full buffer...") // TODO: Handle full buffer case more gracefully
+				slog.Default().Warn("dropping message due to backpressure", "cmp", "router", "identifier", msg.Identifier.Key())
 			}
 		}
 		r.mu.RUnlock()
@@ -44,6 +45,8 @@ func (r *Router) RegisterRoute(id domain.Identifier, ch chan<- domain.Message) {
 	r.mu.Lock()
 	r.routes[id] = append(r.routes[id], ch)
 	r.mu.Unlock()
+
+	slog.Default().Debug("registered route", "cmp", "router", "identifier", id.Key(), "channel", ch)
 }
 
 func (r *Router) DeregisterRoute(id domain.Identifier, ch chan<- domain.Message) {
@@ -62,4 +65,6 @@ func (r *Router) DeregisterRoute(id domain.Identifier, ch chan<- domain.Message)
 		r.routes[id] = slice
 	}
 	r.mu.Unlock()
+
+	slog.Default().Debug("deregistered route", "cmp", "router", "identifier", id.Key(), "channel", ch)
 }

@@ -7,6 +7,21 @@ import (
 	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/domain"
 )
 
+// Session holds per-session state. Owned by the manager loop.
+type session struct {
+	id uuid.UUID
+
+	clientIn  chan domain.Message // caller writes
+	clientOut chan domain.Message // caller reads
+
+	bound map[domain.Identifier]struct{}
+
+	closed    bool
+	attached  bool
+	idleAfter time.Duration
+	idleTimer *time.Timer
+}
+
 // attachSession wires channels, stops idle timer, and registers ready routes.
 // Precondition: session exists and is not attached/closed. Runs in loop.
 func (m *Manager) attachSession(s *session, inBuf, outBuf int) (chan<- domain.Message, <-chan domain.Message, error) {
@@ -32,7 +47,7 @@ func (m *Manager) attachSession(s *session, inBuf, outBuf int) (chan<- domain.Me
 			select {
 			case dst <- msg:
 			default:
-				// drop
+				lg().Warn("drop message on clientIn backpressure", "identifier", msg.Identifier.Key())
 			}
 		}
 	}(cin, m.router.IncomingChannel())
@@ -105,7 +120,7 @@ func (m *Manager) closeSession(sid uuid.UUID, s *session) {
 		}
 		if last := m.decrementStreamRefCount(ident); last {
 			if p, subj, err := m.resolveProvider(ident); err == nil {
-				_ = p.StopStream(subj) // do not wait
+				_ = p.StopStreams([]string{subj}) // do not wait
 			}
 		}
 	}

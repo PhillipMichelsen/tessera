@@ -39,31 +39,6 @@ func identifierSetDifferences(old map[domain.Identifier]struct{}, next []domain.
 	return
 }
 
-// joinErrors aggregates multiple errors.
-type joined struct{ es []error }
-
-func (j joined) Error() string {
-	switch n := len(j.es); {
-	case n == 0:
-		return ""
-	case n == 1:
-		return j.es[0].Error()
-	default:
-		s := j.es[0].Error()
-		for i := 1; i < n; i++ {
-			s += "; " + j.es[i].Error()
-		}
-		return s
-	}
-}
-
-func join(es []error) error {
-	if len(es) == 0 {
-		return nil
-	}
-	return joined{es}
-}
-
 // resolveProvider parses a raw identifier and looks up the provider.
 func (m *Manager) resolveProvider(id domain.Identifier) (provider.Provider, string, error) {
 	provName, subj, ok := id.ProviderSubject()

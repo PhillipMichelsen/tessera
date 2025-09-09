@@ -2,12 +2,13 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
+	"math"
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -47,21 +48,6 @@ func toIdentifierKey(input string) (string, error) {
 	return "raw::" + strings.ToLower(prov) + "." + subj, nil
 }
 
-func prettyOrRaw(b []byte, pretty bool) string {
-	if !pretty || len(b) == 0 {
-		return string(b)
-	}
-	var tmp any
-	if err := json.Unmarshal(b, &tmp); err != nil {
-		return string(b)
-	}
-	out, err := json.MarshalIndent(tmp, "", "  ")
-	if err != nil {
-		return string(b)
-	}
-	return string(out)
-}
-
 func waitReady(ctx context.Context, conn *grpc.ClientConn) error {
 	for {
 		s := conn.GetState()
@@ -77,18 +63,31 @@ func waitReady(ctx context.Context, conn *grpc.ClientConn) error {
 	}
 }
 
+type streamStats struct {
+	TotalMsgs  int64
+	TotalBytes int64
+	TickMsgs   int64
+	TickBytes  int64
+}
+
+type stats struct {
+	TotalMsgs  int64
+	TotalBytes int64
+	ByStream   map[string]*streamStats
+}
+
 func main() {
 	var ids idsFlag
 	var ctlAddr string
 	var strAddr string
-	var pretty bool
 	var timeout time.Duration
+	var refresh time.Duration
 
 	flag.Var(&ids, "id", "identifier (provider:subject or canonical key); repeatable")
 	flag.StringVar(&ctlAddr, "ctl", "127.0.0.1:50051", "gRPC control address")
 	flag.StringVar(&strAddr, "str", "127.0.0.1:50052", "gRPC streaming address")
-	flag.BoolVar(&pretty, "pretty", true, "pretty-print JSON payloads when possible")
 	flag.DurationVar(&timeout, "timeout", 10*time.Second, "start/config/connect timeout")
+	flag.DurationVar(&refresh, "refresh", 1*time.Second, "dashboard refresh interval")
 	flag.Parse()
 
 	if len(ids) == 0 {
@@ -99,6 +98,7 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
+	// Control channel
 	ccCtl, err := grpc.NewClient(
 		ctlAddr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
@@ -107,15 +107,7 @@ func main() {
 		_, _ = fmt.Fprintf(os.Stderr, "new control client: %v\n", err)
 		os.Exit(1)
 	}
-	defer func(ccCtl *grpc.ClientConn) {
-		err := ccCtl.Close()
-		if err != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "close control client: %v\n", err)
-			os.Exit(1)
-		} else {
-			fmt.Println("closed control client")
-		}
-	}(ccCtl)
+	defer ccCtl.Close()
 	ccCtl.Connect()
 
 	ctlConnCtx, cancelCtlConn := context.WithTimeout(ctx, timeout)
@@ -128,17 +120,20 @@ func main() {
 
 	ctl := pb.NewDataServiceControlClient(ccCtl)
 
+	// Start stream
 	ctxStart, cancelStart := context.WithTimeout(ctx, timeout)
 	startResp, err := ctl.StartStream(ctxStart, &pb.StartStreamRequest{})
 	cancelStart()
 	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "StartClientStream: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "StartStream: %v\n", err)
 		os.Exit(1)
 	}
 	streamUUID := startResp.GetStreamUuid()
 	fmt.Printf("stream: %s\n", streamUUID)
 
+	// Configure identifiers
 	var pbIDs []*pb.Identifier
+	orderedIDs := make([]string, 0, len(ids))
 	for _, s := range ids {
 		key, err := toIdentifierKey(s)
 		if err != nil {
@@ -146,6 +141,7 @@ func main() {
 			os.Exit(2)
 		}
 		pbIDs = append(pbIDs, &pb.Identifier{Key: key})
+		orderedIDs = append(orderedIDs, key) // preserve CLI order
 	}
 
 	ctxCfg, cancelCfg := context.WithTimeout(ctx, timeout)
@@ -155,11 +151,12 @@ func main() {
 	})
 	cancelCfg()
 	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "ConfigureClientStream: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "ConfigureStream: %v\n", err)
 		os.Exit(1)
 	}
 	fmt.Printf("configured %d identifiers\n", len(pbIDs))
 
+	// Streaming connection
 	ccStr, err := grpc.NewClient(
 		strAddr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
@@ -168,15 +165,7 @@ func main() {
 		_, _ = fmt.Fprintf(os.Stderr, "new streaming client: %v\n", err)
 		os.Exit(1)
 	}
-	defer func(ccStr *grpc.ClientConn) {
-		err := ccStr.Close()
-		if err != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "close streaming client: %v\n", err)
-			os.Exit(1)
-		} else {
-			fmt.Println("closed streaming client")
-		}
-	}(ccStr)
+	defer ccStr.Close()
 	ccStr.Connect()
 
 	strConnCtx, cancelStrConn := context.WithTimeout(ctx, timeout)
@@ -192,34 +181,128 @@ func main() {
 	streamCtx, streamCancel := context.WithCancel(ctx)
 	defer streamCancel()
 
-	stream, err := str.ConnectStream(streamCtx, &pb.ConnectStreamRequest{StreamUuid: streamUUID})
+	srv, err := str.ConnectStream(streamCtx, &pb.ConnectStreamRequest{StreamUuid: streamUUID})
 	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "ConnectClientStream: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "ConnectStream: %v\n", err)
 		os.Exit(1)
 	}
 	fmt.Println("connected; streaming… (Ctrl-C to quit)")
+
+	// Receiver goroutine → channel
+	type msgWrap struct {
+		idKey string
+		size  int
+		err   error
+	}
+	msgCh := make(chan msgWrap, 1024)
+	go func() {
+		for {
+			m, err := srv.Recv()
+			if err != nil {
+				msgCh <- msgWrap{err: err}
+				close(msgCh)
+				return
+			}
+			id := m.GetIdentifier().GetKey()
+			msgCh <- msgWrap{idKey: id, size: len(m.GetPayload())}
+		}
+	}()
+
+	// Stats and dashboard
+	st := &stats{ByStream: make(map[string]*streamStats)}
+	seen := make(map[string]bool, len(orderedIDs))
+	for _, id := range orderedIDs {
+		seen[id] = true
+	}
+	tick := time.NewTicker(refresh)
+	defer tick.Stop()
+
+	clear := func() { fmt.Print("\033[H\033[2J") }
+	header := func() {
+		fmt.Printf("stream: %s   now: %s   refresh: %s\n",
+			streamUUID, time.Now().Format(time.RFC3339), refresh)
+		fmt.Println("--------------------------------------------------------------------------------------")
+		fmt.Printf("%-56s %10s %14s %12s %16s\n", "identifier", "msgs/s", "bytes/s", "total", "total_bytes")
+		fmt.Println("--------------------------------------------------------------------------------------")
+	}
+
+	printAndReset := func() {
+		clear()
+		header()
+
+		var totMsgsPS, totBytesPS float64
+		for _, id := range orderedIDs {
+			s, ok := st.ByStream[id]
+			var msgsPS, bytesPS float64
+			var totMsgs, totBytes int64
+			if ok {
+				// Convert window counts into per-second rates.
+				msgsPS = float64(atomic.SwapInt64(&s.TickMsgs, 0)) / refresh.Seconds()
+				bytesPS = float64(atomic.SwapInt64(&s.TickBytes, 0)) / refresh.Seconds()
+				totMsgs = atomic.LoadInt64(&s.TotalMsgs)
+				totBytes = atomic.LoadInt64(&s.TotalBytes)
+			}
+			totMsgsPS += msgsPS
+			totBytesPS += bytesPS
+			fmt.Printf("%-56s %10d %14d %12d %16d\n",
+				id,
+				int64(math.Round(msgsPS)),
+				int64(math.Round(bytesPS)),
+				totMsgs,
+				totBytes,
+			)
+		}
+
+		fmt.Println("--------------------------------------------------------------------------------------")
+		fmt.Printf("%-56s %10d %14d %12d %16d\n",
+			"TOTAL",
+			int64(math.Round(totMsgsPS)),
+			int64(math.Round(totBytesPS)),
+			atomic.LoadInt64(&st.TotalMsgs),
+			atomic.LoadInt64(&st.TotalBytes),
+		)
+	}
 
 	for {
 		select {
 		case <-ctx.Done():
 			fmt.Println("\nshutting down")
 			return
-		default:
-			msg, err := stream.Recv()
-			if err != nil {
+
+		case <-tick.C:
+			printAndReset()
+
+		case mw, ok := <-msgCh:
+			if !ok {
+				return
+			}
+			if mw.err != nil {
 				if ctx.Err() != nil {
 					return
 				}
-				_, _ = fmt.Fprintf(os.Stderr, "recv: %v\n", err)
+				_, _ = fmt.Fprintf(os.Stderr, "recv: %v\n", mw.err)
 				os.Exit(1)
 			}
-			id := msg.GetIdentifier()
-			fmt.Printf("[%s] bytes=%d  enc=%s  t=%s\n",
-				id.GetKey(), len(msg.GetPayload()), msg.GetEncoding(),
-				time.Now().Format(time.RFC3339Nano),
-			)
-			fmt.Println(prettyOrRaw(msg.GetPayload(), pretty))
-			fmt.Println("---")
+
+			// Maintain stable order: append new identifiers at first sight.
+			if !seen[mw.idKey] {
+				seen[mw.idKey] = true
+				orderedIDs = append(orderedIDs, mw.idKey)
+			}
+
+			// Account
+			atomic.AddInt64(&st.TotalMsgs, 1)
+			atomic.AddInt64(&st.TotalBytes, int64(mw.size))
+
+			ss := st.ByStream[mw.idKey]
+			if ss == nil {
+				ss = &streamStats{}
+				st.ByStream[mw.idKey] = ss
+			}
+			atomic.AddInt64(&ss.TotalMsgs, 1)
+			atomic.AddInt64(&ss.TotalBytes, int64(mw.size))
+			atomic.AddInt64(&ss.TickMsgs, 1)
+			atomic.AddInt64(&ss.TickBytes, int64(mw.size))
 		}
 	}
 }
