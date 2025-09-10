@@ -6,11 +6,11 @@ type Provider interface {
 	Start() error
 	Stop()
 
-	StartStreams(keys []string) <-chan error
-	StopStreams(key []string) <-chan error
+	Subscribe(subject string) <-chan error
+	Unsubscribe(subject string) <-chan error
+	Fetch(subject string) (domain.Message, error)
 
-	Fetch(key string) (domain.Message, error)
-
+	GetActiveStreams() []string
 	IsStreamActive(key string) bool
 	IsValidSubject(key string, isFetch bool) bool
 }

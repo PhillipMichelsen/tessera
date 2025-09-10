@@ -7,123 +7,80 @@ import (
 	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/domain"
 )
 
-// Session holds per-session state. Owned by the manager loop.
+const (
+	defaultClientBuf = 256
+)
+
+// Session holds per-session state. Owned by the manager loop. So we do not need a mutex.
 type session struct {
 	id uuid.UUID
 
-	clientIn  chan domain.Message // caller writes
-	clientOut chan domain.Message // caller reads
+	inChannel  chan domain.Message // caller writes
+	outChannel chan domain.Message // caller reads
 
 	bound map[domain.Identifier]struct{}
 
-	closed    bool
 	attached  bool
 	idleAfter time.Duration
 	idleTimer *time.Timer
 }
 
-// attachSession wires channels, stops idle timer, and registers ready routes.
-// Precondition: session exists and is not attached/closed. Runs in loop.
-func (m *Manager) attachSession(s *session, inBuf, outBuf int) (chan<- domain.Message, <-chan domain.Message, error) {
+func newSession(idleAfter time.Duration) *session {
+	return &session{
+		id:        uuid.New(),
+		bound:     make(map[domain.Identifier]struct{}),
+		attached:  false,
+		idleAfter: idleAfter,
+	}
+}
+
+func (s *session) armIdleTimer(f func()) {
+	if s.idleTimer != nil {
+		s.idleTimer.Stop()
+	}
+	s.idleTimer = time.AfterFunc(s.idleAfter, f)
+}
+
+func (s *session) disarmIdleTimer() {
+	if s.idleTimer != nil {
+		s.idleTimer.Stop()
+		s.idleTimer = nil
+	}
+}
+
+// generateNewChannels creates new in/out channels for the session, will not close existing channels.
+func (s *session) generateNewChannels(inBuf, outBuf int) (chan domain.Message, chan domain.Message) {
 	if inBuf <= 0 {
 		inBuf = defaultClientBuf
 	}
 	if outBuf <= 0 {
 		outBuf = defaultClientBuf
 	}
-
-	cin := make(chan domain.Message, inBuf)
-	cout := make(chan domain.Message, outBuf)
-	s.clientIn, s.clientOut = cin, cout
-
-	if s.idleTimer != nil {
-		s.idleTimer.Stop()
-		s.idleTimer = nil
-	}
-
-	// Forward clientIn to router.Incoming with drop on backpressure.
-	go func(src <-chan domain.Message, dst chan<- domain.Message) {
-		for msg := range src {
-			select {
-			case dst <- msg:
-			default:
-				lg().Warn("drop message on clientIn backpressure", "identifier", msg.Identifier.Key())
-			}
-		}
-	}(cin, m.router.IncomingChannel())
-
-	// Register all currently bound that are ready.
-	for ident := range s.bound {
-		if !ident.IsRaw() {
-			m.router.RegisterRoute(ident, cout)
-			continue
-		}
-		// Raw: register only if provider stream is active.
-		if p, subj, err := m.resolveProvider(ident); err == nil && p.IsStreamActive(subj) {
-			m.router.RegisterRoute(ident, cout)
-		}
-	}
-
-	s.attached = true
-	return cin, cout, nil
+	s.inChannel = make(chan domain.Message, inBuf)
+	s.outChannel = make(chan domain.Message, outBuf)
+	return s.inChannel, s.outChannel
 }
 
-// detachSession deregisters all routes, closes channels, and arms idle timer.
-// Precondition: session exists and is attached. Runs in loop.
-func (m *Manager) detachSession(sid uuid.UUID, s *session) error {
-	if s.clientOut != nil {
-		for ident := range s.bound {
-			m.router.DeregisterRoute(ident, s.clientOut)
-		}
-		close(s.clientOut)
+// clearChannels closes and nils the in/out channels.
+func (s *session) clearChannels() {
+	if s.inChannel != nil {
+		close(s.inChannel)
+		s.inChannel = nil
 	}
-	if s.clientIn != nil {
-		close(s.clientIn)
+	if s.outChannel != nil {
+		close(s.outChannel)
+		s.outChannel = nil
 	}
-	s.clientIn, s.clientOut = nil, nil
-	s.attached = false
-
-	// Arm idle timer to auto-close the session.
-	s.idleTimer = time.AfterFunc(s.idleAfter, func() {
-		m.cmdCh <- closeSessionCmd{sid: sid, resp: make(chan error, 1)}
-	})
-	return nil
 }
 
-// closeSession performs full teardown and refcount drops. Runs in loop.
-func (m *Manager) closeSession(sid uuid.UUID, s *session) {
-	if s.closed {
-		return
+func (m *Manager) getSessionChannels(sid uuid.UUID) (chan<- domain.Message, <-chan domain.Message, error) {
+	s, ok := m.sessions[sid]
+	if !ok {
+		return nil, nil, ErrSessionNotFound
 	}
-	s.closed = true
-
-	// Detach if attached.
-	if s.attached {
-		if s.clientOut != nil {
-			for ident := range s.bound {
-				m.router.DeregisterRoute(ident, s.clientOut)
-			}
-			close(s.clientOut)
-		}
-		if s.clientIn != nil {
-			close(s.clientIn)
-		}
-	} else if s.idleTimer != nil {
-		s.idleTimer.Stop()
-		s.idleTimer = nil
+	if !s.attached {
+		return nil, nil, ErrClientNotAttached
 	}
 
-	// Drop refs for raw identifiers and stop streams if last ref. Fire-and-forget.
-	for ident := range s.bound {
-		if !ident.IsRaw() {
-			continue
-		}
-		if last := m.decrementStreamRefCount(ident); last {
-			if p, subj, err := m.resolveProvider(ident); err == nil {
-				_ = p.StopStreams([]string{subj}) // do not wait
-			}
-		}
-	}
-
-	delete(m.sessions, sid)
+	return s.inChannel, s.outChannel, nil
 }
