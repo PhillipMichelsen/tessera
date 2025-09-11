@@ -9,7 +9,7 @@ import (
 	"github.com/lmittmann/tint"
 	pb "gitlab.michelsen.id/phillmichelsen/tessera/pkg/pb/data_service"
 	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/manager"
-	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/provider/binance"
+	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/provider/providers/test"
 	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/router"
 	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/server"
 	"google.golang.org/grpc"
@@ -57,8 +57,8 @@ func main() {
 	// Setup
 	r := router.NewRouter(2048)
 	m := manager.NewManager(r)
-	binanceFutures := binance.NewFuturesWebsocket(r.IncomingChannel())
-	if err := m.AddProvider("binance_futures_websocket", binanceFutures); err != nil {
+	testProvider := test.NewTestProvider(r.IncomingChannel(), time.Microsecond*50)
+	if err := m.AddProvider("test_provider", testProvider); err != nil {
 		slog.Error("add provider failed", "err", err)
 		os.Exit(1)
 	}

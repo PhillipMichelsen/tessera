@@ -72,15 +72,3 @@ func (s *session) clearChannels() {
 		s.outChannel = nil
 	}
 }
-
-func (m *Manager) getSessionChannels(sid uuid.UUID) (chan<- domain.Message, <-chan domain.Message, error) {
-	s, ok := m.sessions[sid]
-	if !ok {
-		return nil, nil, ErrSessionNotFound
-	}
-	if !s.attached {
-		return nil, nil, ErrClientNotAttached
-	}
-
-	return s.inChannel, s.outChannel, nil
-}

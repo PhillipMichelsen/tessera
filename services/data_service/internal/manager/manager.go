@@ -42,7 +42,7 @@ func NewManager(r *router.Router) *Manager {
 	go r.Run()
 	go m.run()
 
-	lg().Info("manager started")
+	slog.Default().Info("manager started", slog.String("cmp", "manager"))
 
 	return m
 }
@@ -51,71 +51,85 @@ func NewManager(r *router.Router) *Manager {
 
 // AddProvider adds and starts a new provider.
 func (m *Manager) AddProvider(name string, p provider.Provider) error {
-	lg().Debug("add provider request", slog.String("name", name))
+	slog.Default().Debug("add provider request", slog.String("cmp", "manager"), slog.String("name", name))
 	resp := make(chan addProviderResult, 1)
 	m.cmdCh <- addProviderCmd{name: name, p: p, resp: resp}
 
 	r := <-resp
+
+	slog.Default().Info("provider added", slog.String("cmp", "manager"), slog.String("name", name))
 	return r.err
 }
 
 // RemoveProvider stops and removes a provider, cleaning up all sessions.
 func (m *Manager) RemoveProvider(name string) error {
-	lg().Debug("remove provider request", slog.String("name", name))
+	slog.Default().Debug("remove provider request", slog.String("cmp", "manager"), slog.String("name", name))
 	resp := make(chan removeProviderResult, 1)
 	m.cmdCh <- removeProviderCmd{name: name, resp: resp}
 
 	r := <-resp
+
+	slog.Default().Info("provider removed", slog.String("cmp", "manager"), slog.String("name", name))
 	return r.err
 }
 
 // NewSession creates a new session with the given idle timeout.
 func (m *Manager) NewSession(idleAfter time.Duration) uuid.UUID {
-	lg().Debug("new session request", slog.Duration("idle_after", idleAfter))
+	slog.Default().Debug("new session request", slog.String("cmp", "manager"), slog.Duration("idle_after", idleAfter))
 	resp := make(chan newSessionResult, 1)
 	m.cmdCh <- newSessionCmd{idleAfter: idleAfter, resp: resp}
 
 	r := <-resp
+
+	slog.Default().Info("new session created", slog.String("cmp", "manager"), slog.String("session", r.id.String()))
 	return r.id
 }
 
 // AttachClient attaches a client to a session, creates and returns client channels for the session.
 func (m *Manager) AttachClient(id uuid.UUID, inBuf, outBuf int) (chan<- domain.Message, <-chan domain.Message, error) {
-	lg().Debug("attach client request", slog.String("session", id.String()), slog.Int("in_buf", inBuf), slog.Int("out_buf", outBuf))
+	slog.Default().Debug("attach client request", slog.String("cmp", "manager"), slog.String("session", id.String()), slog.Int("in_buf", inBuf), slog.Int("out_buf", outBuf))
 	resp := make(chan attachResult, 1)
 	m.cmdCh <- attachCmd{sid: id, inBuf: inBuf, outBuf: outBuf, resp: resp}
 
 	r := <-resp
+
+	slog.Default().Debug("client attached", slog.String("cmp", "manager"), slog.String("session", id.String()))
 	return r.cin, r.cout, r.err
 }
 
 // DetachClient detaches the client from the session, closes client channels and arms timeout.
 func (m *Manager) DetachClient(id uuid.UUID) error {
-	lg().Debug("detach client request", slog.String("session", id.String()))
+	slog.Default().Debug("detach client request", slog.String("cmp", "manager"), slog.String("session", id.String()))
 	resp := make(chan detachResult, 1)
 	m.cmdCh <- detachCmd{sid: id, resp: resp}
 
 	r := <-resp
+
+	slog.Default().Debug("client detached", slog.String("cmp", "manager"), slog.String("session", id.String()))
 	return r.err
 }
 
 // ConfigureSession sets the next set of identifiers for the session, starting and stopping streams as needed.
 func (m *Manager) ConfigureSession(id uuid.UUID, next []domain.Identifier) error {
-	lg().Debug("configure session request", slog.String("session", id.String()), slog.Int("idents", len(next)))
+	slog.Default().Debug("configure session request", slog.String("cmp", "manager"), slog.String("session", id.String()), slog.Int("idents", len(next)))
 	resp := make(chan configureResult, 1)
 	m.cmdCh <- configureCmd{sid: id, next: next, resp: resp}
 
 	r := <-resp
+
+	slog.Default().Debug("session configured", slog.String("cmp", "manager"), slog.String("session", id.String()), slog.String("err", fmt.Sprintf("%v", r.err)))
 	return r.err
 }
 
 // CloseSession closes and removes the session, cleaning up all bindings.
 func (m *Manager) CloseSession(id uuid.UUID) error {
-	lg().Debug("close session request", slog.String("session", id.String()))
+	slog.Default().Debug("close session request", slog.String("cmp", "manager"), slog.String("session", id.String()))
 	resp := make(chan closeSessionResult, 1)
 	m.cmdCh <- closeSessionCmd{sid: id, resp: resp}
 
 	r := <-resp
+
+	slog.Default().Info("session closed", slog.String("cmp", "manager"), slog.String("session", id.String()))
 	return r.err
 }
 
@@ -146,12 +160,12 @@ func (m *Manager) run() {
 
 func (m *Manager) handleAddProvider(cmd addProviderCmd) {
 	if _, ok := m.providers[cmd.name]; ok {
-		lg().Warn("provider already exists", slog.String("name", cmd.name))
+		slog.Default().Warn("provider already exists", slog.String("cmp", "manager"), slog.String("name", cmd.name))
 		cmd.resp <- addProviderResult{err: fmt.Errorf("provider exists: %s", cmd.name)}
 		return
 	}
 	if err := cmd.p.Start(); err != nil {
-		lg().Warn("failed to start provider", slog.String("name", cmd.name), slog.String("err", err.Error()))
+		slog.Default().Warn("failed to start provider", slog.String("cmp", "manager"), slog.String("name", cmd.name), slog.String("err", err.Error()))
 		cmd.resp <- addProviderResult{err: fmt.Errorf("failed to start provider %s: %w", cmd.name, err)}
 		return
 	}
@@ -191,6 +205,10 @@ func (m *Manager) handleAttach(cmd attachCmd) {
 	s.attached = true
 	s.disarmIdleTimer()
 
+	for id := range s.bound {
+		m.router.RegisterRoute(id, cout)
+	}
+
 	cmd.resp <- attachResult{cin: cin, cout: cout, err: nil}
 }
 
@@ -203,6 +221,10 @@ func (m *Manager) handleDetach(cmd detachCmd) {
 	if !s.attached {
 		cmd.resp <- detachResult{ErrClientNotAttached}
 		return
+	}
+
+	for id := range s.bound {
+		m.router.DeregisterRoute(id, s.outChannel)
 	}
 
 	s.clearChannels()
@@ -302,12 +324,18 @@ func (m *Manager) handleConfigure(cmd configureCmd) {
 		removed = append(removed, id)
 	}
 
-	// Update the router routes to reflect the new successful bindings
-	for _, id := range added {
-		m.router.RegisterRoute(id, s.outChannel)
-	}
-	for _, id := range removed {
-		m.router.DeregisterRoute(id, s.outChannel)
+	if s.attached {
+		if s.inChannel == nil || s.outChannel == nil {
+			errs = errors.Join(errs, fmt.Errorf("channels do not exist despite attached state")) // error should never be hit
+			slog.Default().Error("no channels despite attached state", slog.String("cmp", "manager"), slog.String("session", cmd.sid.String()))
+		} else {
+			for _, id := range added {
+				m.router.RegisterRoute(id, s.outChannel)
+			}
+			for _, id := range removed {
+				m.router.DeregisterRoute(id, s.outChannel)
+			}
+		}
 	}
 
 	cmd.resp <- configureResult{err: errs}

@@ -1,12 +1,8 @@
 package manager
 
 import (
-	"log/slog"
-
 	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/domain"
 )
-
-func lg() *slog.Logger { return slog.Default().With("cmp", "manager") }
 
 func identifierSetDifferences(oldIDs, nextIDs []domain.Identifier) (toAdd, toDel []domain.Identifier) {
 	oldSet := make(map[domain.Identifier]struct{}, len(oldIDs))

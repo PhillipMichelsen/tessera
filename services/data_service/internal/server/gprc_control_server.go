@@ -24,10 +24,7 @@ func NewGRPCControlServer(m *manager.Manager) *GRPCControlServer {
 // StartStream creates a new session. It does NOT attach client channels.
 // Your streaming RPC should later call AttachClient(sessionID, opts).
 func (s *GRPCControlServer) StartStream(_ context.Context, req *pb.StartStreamRequest) (*pb.StartStreamResponse, error) {
-	sessionID, err := s.manager.NewSession(time.Duration(1) * time.Minute) // timeout set to 1 minute
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "new session: %v", err)
-	}
+	sessionID := s.manager.NewSession(time.Duration(1) * time.Minute) // timeout set to 1 minute
 	return &pb.StartStreamResponse{StreamUuid: sessionID.String()}, nil
 }
 
@@ -56,8 +53,6 @@ func (s *GRPCControlServer) ConfigureStream(_ context.Context, req *pb.Configure
 		switch err {
 		case manager.ErrSessionNotFound:
 			return nil, status.Errorf(codes.NotFound, "session not found: %v", err)
-		case manager.ErrSessionClosed:
-			return nil, status.Errorf(codes.FailedPrecondition, "session closed: %v", err)
 		default:
 			return nil, status.Errorf(codes.Internal, "set subscriptions: %v", err)
 		}
