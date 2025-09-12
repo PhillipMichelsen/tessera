@@ -57,7 +57,7 @@ func main() {
 	// Setup
 	r := router.NewRouter(2048)
 	m := manager.NewManager(r)
-	testProvider := test.NewTestProvider(r.IncomingChannel(), time.Microsecond*50)
+	testProvider := test.NewTestProvider(r.IncomingChannel(), time.Microsecond*13)
 	if err := m.AddProvider("test_provider", testProvider); err != nil {
 		slog.Error("add provider failed", "err", err)
 		os.Exit(1)
@@ -93,6 +93,21 @@ func main() {
 		slog.Info("listening", "cmp", "grpc-streaming", "addr", ":50052")
 		if err := grpcStreamingServer.Serve(lis); err != nil {
 			slog.Error("serve failed", "cmp", "grpc-streaming", "err", err)
+			os.Exit(1)
+		}
+	}()
+
+	// Socket Streaming Server
+	socketStreamingServer := server.NewSocketStreamingServer(m)
+	go func() {
+		lis, err := net.Listen("tcp", ":50060")
+		if err != nil {
+			slog.Error("listen failed", "cmp", "socket-streaming", "addr", ":50060", "err", err)
+			os.Exit(1)
+		}
+		slog.Info("listening", "cmp", "socket-streaming", "addr", ":50060")
+		if err := socketStreamingServer.Serve(lis); err != nil {
+			slog.Error("serve failed", "cmp", "socket-streaming", "err", err)
 			os.Exit(1)
 		}
 	}()
