@@ -93,7 +93,7 @@ func (m *Manager) AttachClient(id uuid.UUID, inBuf, outBuf int) (chan<- domain.M
 
 	r := <-resp
 
-	slog.Default().Debug("client attached", slog.String("cmp", "manager"), slog.String("session", id.String()))
+	slog.Default().Info("client attached", slog.String("cmp", "manager"), slog.String("session", id.String()))
 	return r.cin, r.cout, r.err
 }
 
@@ -105,7 +105,7 @@ func (m *Manager) DetachClient(id uuid.UUID) error {
 
 	r := <-resp
 
-	slog.Default().Debug("client detached", slog.String("cmp", "manager"), slog.String("session", id.String()))
+	slog.Default().Info("client detached", slog.String("cmp", "manager"), slog.String("session", id.String()))
 	return r.err
 }
 
@@ -117,7 +117,7 @@ func (m *Manager) ConfigureSession(id uuid.UUID, next []domain.Identifier) error
 
 	r := <-resp
 
-	slog.Default().Debug("session configured", slog.String("cmp", "manager"), slog.String("session", id.String()), slog.String("err", fmt.Sprintf("%v", r.err)))
+	slog.Default().Info("session configured", slog.String("cmp", "manager"), slog.String("session", id.String()), slog.String("err", fmt.Sprintf("%v", r.err)))
 	return r.err
 }
 
@@ -158,6 +158,7 @@ func (m *Manager) run() {
 
 // Command handlers, run in loop goroutine. With a single goroutine, no locking is needed.
 
+// handleAddProvider adds and starts a new provider.
 func (m *Manager) handleAddProvider(cmd addProviderCmd) {
 	if _, ok := m.providers[cmd.name]; ok {
 		slog.Default().Warn("provider already exists", slog.String("cmp", "manager"), slog.String("name", cmd.name))
@@ -173,10 +174,13 @@ func (m *Manager) handleAddProvider(cmd addProviderCmd) {
 	cmd.resp <- addProviderResult{err: nil}
 }
 
-func (m *Manager) handleRemoveProvider(cmd removeProviderCmd) {
+// handleRemoveProvider stops and removes a provider, removing the bindings from all sessions that use streams from it.
+// TODO: Implement this function.
+func (m *Manager) handleRemoveProvider(_ removeProviderCmd) {
 	panic("unimplemented")
 }
 
+// handleNewSession creates a new session with the given idle timeout. The idle timeout is typically not set by the client, but by the server configuration.
 func (m *Manager) handleNewSession(cmd newSessionCmd) {
 	s := newSession(cmd.idleAfter)
 	s.armIdleTimer(func() {
@@ -190,6 +194,7 @@ func (m *Manager) handleNewSession(cmd newSessionCmd) {
 	cmd.resp <- newSessionResult{id: s.id}
 }
 
+// handleAttach attaches a client to a session, creating new client channels for the session. If the session is already attached, returns an error.
 func (m *Manager) handleAttach(cmd attachCmd) {
 	s, ok := m.sessions[cmd.sid]
 	if !ok {
@@ -212,6 +217,7 @@ func (m *Manager) handleAttach(cmd attachCmd) {
 	cmd.resp <- attachResult{cin: cin, cout: cout, err: nil}
 }
 
+// handleDetach detaches the client from the session, closing client channels and arming the idle timeout. If the session is not attached, returns an error.
 func (m *Manager) handleDetach(cmd detachCmd) {
 	s, ok := m.sessions[cmd.sid]
 	if !ok {
@@ -240,6 +246,7 @@ func (m *Manager) handleDetach(cmd detachCmd) {
 }
 
 // handleConfigure updates the session bindings, starting and stopping streams as needed. Currently only supports Raw streams.
+// TODO: Change this configuration to be an atomic operation, so that partial failures do not end in a half-configured state.
 func (m *Manager) handleConfigure(cmd configureCmd) {
 	s, ok := m.sessions[cmd.sid]
 	if !ok {
@@ -341,6 +348,70 @@ func (m *Manager) handleConfigure(cmd configureCmd) {
 	cmd.resp <- configureResult{err: errs}
 }
 
-func (m *Manager) handleCloseSession(c closeSessionCmd) {
-	panic("unimplemented")
+// handleCloseSession closes and removes the session, cleaning up all bindings.
+func (m *Manager) handleCloseSession(cmd closeSessionCmd) {
+	s, ok := m.sessions[cmd.sid]
+	if !ok {
+		cmd.resp <- closeSessionResult{err: ErrSessionNotFound}
+		return
+	}
+
+	var errs error
+
+	// Deregister attached routes
+	if s.attached {
+		if s.outChannel == nil {
+			errs = errors.Join(errs, fmt.Errorf("channels do not exist despite attached state"))
+			slog.Default().Error("no channels despite attached state", slog.String("cmp", "manager"), slog.String("session", cmd.sid.String()))
+		} else {
+			for id := range s.bound {
+				m.router.DeregisterRoute(id, s.outChannel)
+			}
+		}
+	}
+
+	// Unsubscribe from all streams if no other session needs them.
+	pendingUnsub := make(map[domain.Identifier]<-chan error)
+
+	for id := range s.bound {
+		pName, subject, ok := id.ProviderSubject()
+		if !ok || subject == "" || pName == "" {
+			errs = errors.Join(errs, fmt.Errorf("invalid identifier: %s", id.Key()))
+			continue
+		}
+		p, ok := m.providers[pName]
+		if !ok {
+			errs = errors.Join(errs, fmt.Errorf("provider not found: %s", pName))
+			continue
+		}
+
+		stillNeeded := false
+		for _, other := range m.sessions {
+			if other.id == s.id {
+				continue
+			}
+			if _, bound := other.bound[id]; bound {
+				stillNeeded = true
+				break
+			}
+		}
+		if stillNeeded {
+			continue
+		}
+
+		pendingUnsub[id] = p.Unsubscribe(subject)
+	}
+
+	for id, ch := range pendingUnsub {
+		if err := <-ch; err != nil {
+			errs = errors.Join(errs, fmt.Errorf("failed to unsubscribe from %s: %w", id.Key(), err))
+		}
+	}
+
+	// Stop timers and channels, remove session.
+	s.disarmIdleTimer()
+	s.clearChannels()
+	delete(m.sessions, s.id)
+
+	cmd.resp <- closeSessionResult{err: errs}
 }

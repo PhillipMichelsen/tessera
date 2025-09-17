@@ -11,7 +11,8 @@ const (
 	defaultClientBuf = 256
 )
 
-// Session holds per-session state. Owned by the manager loop. So we do not need a mutex.
+// session holds per-session state.
+// Owned by the manager loop. So we do not need a mutex.
 type session struct {
 	id uuid.UUID
 
@@ -34,6 +35,7 @@ func newSession(idleAfter time.Duration) *session {
 	}
 }
 
+// armIdleTimer sets the idle timer to call f after idleAfter duration (resets existing timer if any).
 func (s *session) armIdleTimer(f func()) {
 	if s.idleTimer != nil {
 		s.idleTimer.Stop()
@@ -41,6 +43,7 @@ func (s *session) armIdleTimer(f func()) {
 	s.idleTimer = time.AfterFunc(s.idleAfter, f)
 }
 
+// disarmIdleTimer stops and nils the idle timer if any.
 func (s *session) disarmIdleTimer() {
 	if s.idleTimer != nil {
 		s.idleTimer.Stop()

@@ -9,6 +9,7 @@ import (
 	"github.com/lmittmann/tint"
 	pb "gitlab.michelsen.id/phillmichelsen/tessera/pkg/pb/data_service"
 	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/manager"
+	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/provider/providers/binance/ws"
 	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/provider/providers/test"
 	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/router"
 	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/server"
@@ -57,8 +58,17 @@ func main() {
 	// Setup
 	r := router.NewRouter(2048)
 	m := manager.NewManager(r)
-	testProvider := test.NewTestProvider(r.IncomingChannel(), time.Microsecond*13)
+
+	// Providers
+
+	testProvider := test.NewTestProvider(r.IncomingChannel(), time.Microsecond*100)
 	if err := m.AddProvider("test_provider", testProvider); err != nil {
+		slog.Error("add provider failed", "err", err)
+		os.Exit(1)
+	}
+
+	binanceFuturesWebsocket := ws.NewBinanceFuturesWebsocket(ws.Config{}, r.IncomingChannel())
+	if err := m.AddProvider("binance_futures", binanceFuturesWebsocket); err != nil {
 		slog.Error("add provider failed", "err", err)
 		os.Exit(1)
 	}
