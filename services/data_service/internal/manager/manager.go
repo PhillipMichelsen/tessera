@@ -47,7 +47,7 @@ func NewManager(r *router.Router) *Manager {
 	return m
 }
 
-// Public API (posts commands to loop)
+// API
 
 // AddProvider adds and starts a new provider.
 func (m *Manager) AddProvider(name string, p provider.Provider) error {
