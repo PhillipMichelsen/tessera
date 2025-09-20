@@ -1,3 +1,6 @@
+// Package manager implements the core orchestration logic for data providers and client sessions
+// in the tessera data_service. It manages provider registration, session lifecycle, client attachment,
+// stream configuration, and routing of messages between clients and providers.
 package manager
 
 import (
