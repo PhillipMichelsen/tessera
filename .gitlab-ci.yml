@@ -1,8 +1,0 @@
-workflow:
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-
-no_op_job:
-  script: echo "noop"
-  rules:
-    - when: never
