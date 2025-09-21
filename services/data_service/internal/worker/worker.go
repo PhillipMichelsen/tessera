@@ -21,7 +21,7 @@ var (
 type Worker interface {
 	ID() uuid.UUID
 	Start(workerID uuid.UUID, controller manager.SessionController, cfg map[string]string) error
-	Stop()
+	Stop() error
 }
 
 type BaseStatefulWorker struct {
@@ -44,7 +44,7 @@ func (w *BaseStatefulWorker) Start(workerID uuid.UUID, sessionController manager
 	w.mu.Lock()
 	if w.running {
 		w.mu.Unlock()
-		return ErrWorkerRunning
+		return ErrWorkerNotRunning
 	}
 
 	sid := sessionController.NewSession(time.Second * 30)
@@ -61,16 +61,16 @@ func (w *BaseStatefulWorker) Start(workerID uuid.UUID, sessionController manager
 	return nil
 }
 
-func (w *BaseStatefulWorker) Stop() {
+func (w *BaseStatefulWorker) Stop() error {
 	w.mu.Lock()
 	if !w.running {
 		w.mu.Unlock()
-		return
+		return ErrWorkerNotRunning
 	}
 
 	err := w.sc.DetachClient(w.sid)
 	if err != nil && err != manager.ErrSessionNotFound {
-		slog.Default().Error("a non possible error occured", "error", err.Error())
+		slog.Default().Error("error when detaching client", "error", err.Error())
 	}
 
 	err = w.sc.CloseSession(w.sid)
@@ -83,6 +83,7 @@ func (w *BaseStatefulWorker) Stop() {
 	w.running = false
 
 	w.mu.Unlock()
+	return nil
 }
 
 func (w *BaseStatefulWorker) ID() uuid.UUID { return w.workerUUID }
