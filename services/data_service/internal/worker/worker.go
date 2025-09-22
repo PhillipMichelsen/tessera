@@ -3,6 +3,7 @@
 package worker
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"sync"
@@ -25,9 +26,13 @@ type SessionController interface {
 	CloseSession(id uuid.UUID) error
 }
 
+type Instruction struct{}
+
 type Worker interface {
 	Start(workerID uuid.UUID, controller SessionController, cfg []byte) error
 	Stop() error
+
+	Execute(ctx context.Context, inst Instruction) error
 
 	IsRunning() bool
 	ID() uuid.UUID
