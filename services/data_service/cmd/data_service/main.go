@@ -13,6 +13,7 @@ import (
 	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/provider/providers/test"
 	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/router"
 	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/server"
+	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/worker"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 )
@@ -56,8 +57,10 @@ func main() {
 	slog.Info("starting", "svc", "data-service")
 
 	// Setup
+	wr := worker.NewRegistry()
+
 	r := router.NewRouter(2048)
-	m := manager.NewManager(r)
+	m := manager.NewManager(r, wr)
 
 	// Providers
 
