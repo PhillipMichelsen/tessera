@@ -10,7 +10,6 @@ import (
 
 	"github.com/google/uuid"
 	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/domain"
-	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/manager"
 )
 
 var (
@@ -18,9 +17,18 @@ var (
 	ErrWorkerRunning    = errors.New("worker already running")
 )
 
+type SessionController interface {
+	NewSession(idleAfter time.Duration) uuid.UUID
+	AttachClient(id uuid.UUID, inBuf, outBuf int) (chan<- domain.Message, <-chan domain.Message, error)
+	DetachClient(id uuid.UUID) error
+	ConfigureSession(id uuid.UUID, next []domain.Identifier) error
+	CloseSession(id uuid.UUID) error
+}
+
 type Worker interface {
-	Start(workerID uuid.UUID, controller manager.SessionController, cfg map[string]string) error
+	Start(workerID uuid.UUID, controller SessionController, cfg []byte) error
 	Stop() error
+
 	IsRunning() bool
 	ID() uuid.UUID
 }
@@ -28,7 +36,7 @@ type Worker interface {
 type BaseStatefulWorker struct {
 	workerUUID uuid.UUID
 
-	sc  manager.SessionController
+	sc  SessionController
 	sid uuid.UUID
 	in  chan<- domain.Message
 	out <-chan domain.Message
@@ -37,7 +45,7 @@ type BaseStatefulWorker struct {
 	mu      sync.RWMutex
 }
 
-func (w *BaseStatefulWorker) Start(workerUUID uuid.UUID, sessionController manager.SessionController, _ map[string]string) error {
+func (w *BaseStatefulWorker) Start(workerUUID uuid.UUID, sessionController SessionController, _ []byte) error {
 	if sessionController == nil {
 		return errors.New("nil SessionController provided")
 	}
@@ -48,7 +56,7 @@ func (w *BaseStatefulWorker) Start(workerUUID uuid.UUID, sessionController manag
 		return ErrWorkerRunning
 	}
 
-	sid := sessionController.NewSession(time.Second * 30)
+	sid := sessionController.NewSession(time.Duration(0)) // set a zero duration to disable idle timeout
 	in, out, err := sessionController.AttachClient(sid, 256, 256)
 	if err != nil {
 		w.mu.Unlock()
@@ -71,12 +79,12 @@ func (w *BaseStatefulWorker) Stop() error {
 	}
 
 	err := w.sc.DetachClient(w.sid)
-	if err != nil && err != manager.ErrSessionNotFound {
+	if err != nil {
 		slog.Default().Error("error when detaching client", "error", err.Error())
 	}
 
 	err = w.sc.CloseSession(w.sid)
-	if err != nil && err != manager.ErrSessionNotFound {
+	if err != nil {
 		slog.Default().Error("error when closing session", "error", err.Error())
 	}
 
@@ -104,7 +112,7 @@ func (w *BaseStatefulWorker) ID() uuid.UUID {
 	return id
 }
 
-func (w *BaseStatefulWorker) SetStreams(ids []domain.Identifier) error {
+func (w *BaseStatefulWorker) SetReceiveIdentifiers(ids []domain.Identifier) error {
 	w.mu.RLock()
 	if !w.running {
 		w.mu.RUnlock()

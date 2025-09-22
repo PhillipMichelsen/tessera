@@ -43,7 +43,7 @@ func (s *session) armIdleTimer(f func()) {
 	s.idleTimer = time.AfterFunc(s.idleAfter, f)
 }
 
-// disarmIdleTimer stops and nils the idle timer if any.
+// disarmIdleTimer stops and nils the idle timer if any. This call is idempotent.
 func (s *session) disarmIdleTimer() {
 	if s.idleTimer != nil {
 		s.idleTimer.Stop()

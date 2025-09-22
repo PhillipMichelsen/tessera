@@ -13,6 +13,7 @@ import (
 	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/domain"
 	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/provider"
 	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/router"
+	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/worker"
 )
 
 var (
@@ -35,14 +36,14 @@ type Manager struct {
 }
 
 // NewManager creates a manager and starts its run loop.
-func NewManager(r *router.Router) *Manager {
+func NewManager(router *router.Router, workerRegistry *worker.Registry) *Manager {
 	m := &Manager{
 		cmdCh:     make(chan any, 256),
 		providers: make(map[string]provider.Provider),
 		sessions:  make(map[uuid.UUID]*session),
-		router:    r,
+		router:    router,
 	}
-	go r.Run()
+	go router.Run()
 	go m.run()
 
 	slog.Default().Info("manager started", slog.String("cmp", "manager"))
@@ -186,11 +187,15 @@ func (m *Manager) handleRemoveProvider(_ removeProviderCmd) {
 // handleNewSession creates a new session with the given idle timeout. The idle timeout is typically not set by the client, but by the server configuration.
 func (m *Manager) handleNewSession(cmd newSessionCmd) {
 	s := newSession(cmd.idleAfter)
-	s.armIdleTimer(func() {
-		resp := make(chan closeSessionResult, 1)
-		m.cmdCh <- closeSessionCmd{sid: s.id, resp: resp}
-		<-resp
-	})
+
+	// Only arm the idle timer if the timeout is positive. We allow a zero or negative timeout to indicate "never timeout".
+	if s.idleAfter <= 0 {
+		s.armIdleTimer(func() {
+			resp := make(chan closeSessionResult, 1)
+			m.cmdCh <- closeSessionCmd{sid: s.id, resp: resp}
+			<-resp
+		})
+	}
 
 	m.sessions[s.id] = s
 
@@ -237,11 +242,15 @@ func (m *Manager) handleDetach(cmd detachCmd) {
 	}
 
 	s.clearChannels()
-	s.armIdleTimer(func() {
-		resp := make(chan closeSessionResult, 1)
-		m.cmdCh <- closeSessionCmd{sid: s.id, resp: resp}
-		<-resp
-	})
+
+	// Only rearm the idle timer if the timeout is positive.
+	if s.idleAfter > 0 {
+		s.armIdleTimer(func() {
+			resp := make(chan closeSessionResult, 1)
+			m.cmdCh <- closeSessionCmd{sid: s.id, resp: resp}
+			<-resp
+		})
+	}
 
 	s.attached = false
 
