@@ -1,181 +1,131 @@
+// Package domain defines external message identifiers.
 package domain
 
 import (
 	"errors"
-	"fmt"
-	"regexp"
 	"sort"
 	"strings"
 )
 
-const (
-	prefixRaw      = "raw::"
-	prefixInternal = "internal::"
-)
+var ErrBadIdentifier = errors.New("identifier: invalid format")
 
-// Identifier is a canonical representation of a data stream identifier.
+// Identifier is a lightweight wrapper around the canonical key.
 type Identifier struct{ key string }
 
-func (id Identifier) IsRaw() bool      { return strings.HasPrefix(id.key, prefixRaw) }
-func (id Identifier) IsInternal() bool { return strings.HasPrefix(id.key, prefixInternal) }
-func (id Identifier) Key() string      { return id.key }
+// NewIdentifier builds a canonical key: "namespace::l1.l2[param=v;...] .l3".
+// Labels and params are sorted for determinism.
+func NewIdentifier(namespace string, labels map[string]map[string]string) Identifier {
+	var b strings.Builder
+	// rough prealloc: ns + "::" + avg label + some params
+	b.Grow(len(namespace) + 2 + 10*len(labels) + 20)
 
-func (id Identifier) ProviderSubject() (provider, subject string, ok bool) {
-	if !id.IsRaw() {
-		return "", "", false
+	// namespace
+	b.WriteString(namespace)
+	b.WriteString("::")
+
+	// sort label names for stable output
+	labelNames := make([]string, 0, len(labels))
+	for name := range labels {
+		labelNames = append(labelNames, name)
 	}
-	body := strings.TrimPrefix(id.key, prefixRaw)
-	prov, subj, ok := strings.Cut(body, ".")
-	return prov, subj, ok
+	sort.Strings(labelNames)
+
+	for i, name := range labelNames {
+		if i > 0 {
+			b.WriteByte('.')
+		}
+		b.WriteString(name)
+
+		// params (sorted)
+		params := labels[name]
+		if len(params) > 0 {
+			keys := make([]string, 0, len(params))
+			for k := range params {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+
+			b.WriteByte('[')
+			for j, k := range keys {
+				if j > 0 {
+					b.WriteByte(';')
+				}
+				b.WriteString(k)
+				b.WriteByte('=')
+				b.WriteString(params[k])
+			}
+			b.WriteByte(']')
+		}
+	}
+
+	return Identifier{key: b.String()}
 }
 
-func (id Identifier) InternalParts() (venue, stream, symbol string, params map[string]string, ok bool) {
-	if !id.IsInternal() {
-		return "", "", "", nil, false
+// NewIdentifierFromRaw wraps a raw key without validation.
+func NewIdentifierFromRaw(raw string) Identifier { return Identifier{key: raw} }
+
+// Key returns the canonical key string.
+func (id Identifier) Key() string { return id.key }
+
+// Parse returns namespace and labels from Key.
+// Format: "namespace::label1.label2[param=a;foo=bar].label3"
+func (id Identifier) Parse() (string, map[string]map[string]string, error) {
+	k := id.key
+	i := strings.Index(k, "::")
+	if i <= 0 {
+		return "", nil, ErrBadIdentifier
 	}
-	body := strings.TrimPrefix(id.key, prefixInternal)
-	before, bracket, _ := strings.Cut(body, "[")
-	parts := strings.Split(before, ".")
-	if len(parts) != 3 {
-		return "", "", "", nil, false
+	ns := k[:i]
+	if ns == "" {
+		return "", nil, ErrBadIdentifier
 	}
-	return parts[0], parts[1], parts[2], decodeParams(strings.TrimSuffix(bracket, "]")), true
+	raw := k[i+2:]
+
+	lbls := make(map[string]map[string]string, 8)
+	if raw == "" {
+		return ns, lbls, nil
+	}
+
+	for tok := range strings.SplitSeq(raw, ".") {
+		if tok == "" {
+			continue
+		}
+		name, params, err := parseLabel(tok)
+		if err != nil || name == "" {
+			return "", nil, ErrBadIdentifier
+		}
+		lbls[name] = params
+	}
+	return ns, lbls, nil
 }
 
-func RawID(provider, subject string) (Identifier, error) {
-	p := strings.ToLower(strings.TrimSpace(provider))
-	s := strings.TrimSpace(subject)
-
-	if err := validateComponent("provider", p, false); err != nil {
-		return Identifier{}, err
+// parseLabel parses "name" or "name[k=v;...]" into (name, params).
+func parseLabel(tok string) (string, map[string]string, error) {
+	lb := strings.IndexByte(tok, '[')
+	if lb == -1 {
+		return tok, map[string]string{}, nil
 	}
-	if err := validateComponent("subject", s, true); err != nil {
-		return Identifier{}, err
-	}
-	return Identifier{key: prefixRaw + p + "." + s}, nil
-}
-
-func InternalID(venue, stream, symbol string, params map[string]string) (Identifier, error) {
-	v := strings.ToLower(strings.TrimSpace(venue))
-	t := strings.ToLower(strings.TrimSpace(stream))
-	sym := strings.ToUpper(strings.TrimSpace(symbol))
-
-	if err := validateComponent("venue", v, false); err != nil {
-		return Identifier{}, err
-	}
-	if err := validateComponent("stream", t, false); err != nil {
-		return Identifier{}, err
-	}
-	if err := validateComponent("symbol", sym, false); err != nil {
-		return Identifier{}, err
+	rb := strings.LastIndexByte(tok, ']')
+	if rb == -1 || rb < lb {
+		return "", nil, ErrBadIdentifier
 	}
 
-	paramStr, err := encodeParams(params) // "k=v;..." or ""
-	if err != nil {
-		return Identifier{}, err
-	}
+	name := tok[:lb]
+	paramStr := tok[lb+1 : rb]
+	params := map[string]string{}
 	if paramStr == "" {
-		paramStr = "[]"
-	} else {
-		paramStr = "[" + paramStr + "]"
+		return name, params, nil
 	}
-	return Identifier{key: prefixInternal + v + "." + t + "." + sym + paramStr}, nil
-}
 
-func ParseIdentifier(s string) (Identifier, error) {
-	s = strings.TrimSpace(s)
-	switch {
-	case strings.HasPrefix(s, prefixRaw):
-		// raw::provider.subject
-		body := strings.TrimPrefix(s, prefixRaw)
-		prov, subj, ok := strings.Cut(body, ".")
-		if !ok {
-			return Identifier{}, errors.New("invalid raw identifier: missing '.'")
-		}
-		return RawID(prov, subj)
-
-	case strings.HasPrefix(s, prefixInternal):
-		// internal::venue.stream.symbol[...]
-		body := strings.TrimPrefix(s, prefixInternal)
-		before, bracket, _ := strings.Cut(body, "[")
-		parts := strings.Split(before, ".")
-		if len(parts) != 3 {
-			return Identifier{}, errors.New("invalid internal identifier: need venue.stream.symbol")
-		}
-		params := decodeParams(strings.TrimSuffix(bracket, "]"))
-		return InternalID(parts[0], parts[1], parts[2], params)
-	}
-	return Identifier{}, errors.New("unknown identifier prefix")
-}
-
-var (
-	segDisallow = regexp.MustCompile(`[ \t\r\n\[\]]`) // forbid whitespace/brackets in fixed segments
-	dotDisallow = regexp.MustCompile(`[.]`)           // fixed segments cannot contain '.'
-)
-
-// allowAny=true (for subject) skips dot checks but still forbids whitespace/brackets.
-func validateComponent(name, v string, allowAny bool) error {
-	if v == "" {
-		return fmt.Errorf("%s cannot be empty", name)
-	}
-	if allowAny {
-		if segDisallow.MatchString(v) {
-			return fmt.Errorf("%s contains illegal chars [] or whitespace", name)
-		}
-		return nil
-	}
-	if segDisallow.MatchString(v) || dotDisallow.MatchString(v) {
-		return fmt.Errorf("%s contains illegal chars (dot/brackets/whitespace)", name)
-	}
-	return nil
-}
-
-// encodeParams renders sorted k=v pairs separated by ';'.
-func encodeParams(params map[string]string) (string, error) {
-	if len(params) == 0 {
-		return "", nil
-	}
-	keys := make([]string, 0, len(params))
-	for k := range params {
-		k = strings.ToLower(strings.TrimSpace(k))
-		if k == "" {
+	for pair := range strings.SplitSeq(paramStr, ";") {
+		if pair == "" {
 			continue
 		}
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	out := make([]string, 0, len(keys))
-	for _, k := range keys {
-		v := strings.TrimSpace(params[k])
-		// prevent breaking delimiters
-		if strings.ContainsAny(k, ";]") || strings.ContainsAny(v, ";]") {
-			return "", fmt.Errorf("param %q contains illegal ';' or ']'", k)
+		kv := strings.SplitN(pair, "=", 2)
+		if len(kv) != 2 || kv[0] == "" {
+			return "", nil, ErrBadIdentifier
 		}
-		out = append(out, k+"="+v)
+		params[kv[0]] = kv[1]
 	}
-	return strings.Join(out, ";"), nil
-}
-
-func decodeParams(s string) map[string]string {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return map[string]string{}
-	}
-	out := make(map[string]string, 4)
-	for _, p := range strings.Split(s, ";") {
-		if p == "" {
-			continue
-		}
-		kv := strings.SplitN(p, "=", 2)
-		if len(kv) != 2 {
-			continue
-		}
-		k := strings.ToLower(strings.TrimSpace(kv[0]))
-		v := strings.TrimSpace(kv[1])
-		if k != "" {
-			out[k] = v
-		}
-	}
-	return out
+	return name, params, nil
 }

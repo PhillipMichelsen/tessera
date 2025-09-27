@@ -60,7 +60,7 @@ type detachResult struct {
 
 type configureCmd struct {
 	sid  uuid.UUID
-	next []domain.Identifier
+	next []domain.Pattern
 	resp chan configureResult
 }
 
