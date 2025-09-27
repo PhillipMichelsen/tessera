@@ -110,6 +110,8 @@ func (m *Manager) CloseSession(id uuid.UUID) error {
 	return r.err
 }
 
+// TODO: Add worker spawn/removal/configure public methods and command types
+
 // The main loop of the manager, processing commands serially.
 func (m *Manager) run() {
 	for {
@@ -206,6 +208,7 @@ func (m *Manager) handleConfigure(cmd configureCmd) {
 	}
 
 	var errs error
+	// TODO: IMPLEMENT!!!
 
 	cmd.resp <- configureResult{err: errs}
 }
