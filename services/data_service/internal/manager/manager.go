@@ -43,7 +43,7 @@ func NewManager(router *router.Router, workerRegistry *worker.Registry) *Manager
 		sessions:  make(map[uuid.UUID]*session),
 		router:    router,
 	}
-	go router.Run()
+	go router.Start()
 	go m.run()
 
 	slog.Default().Info("manager started", slog.String("cmp", "manager"))
@@ -113,9 +113,9 @@ func (m *Manager) DetachClient(id uuid.UUID) error {
 	return r.err
 }
 
-// ConfigureSession sets the next set of identifiers for the session, starting and stopping streams as needed.
-func (m *Manager) ConfigureSession(id uuid.UUID, next []domain.Identifier) error {
-	slog.Default().Debug("configure session request", slog.String("cmp", "manager"), slog.String("session", id.String()), slog.Int("idents", len(next)))
+// ConfigureSession sets the next set of patterns for the session, starting and stopping streams as needed.
+func (m *Manager) ConfigureSession(id uuid.UUID, next []domain.Pattern) error {
+	slog.Default().Debug("configure session request", slog.String("cmp", "manager"), slog.String("session", id.String()), slog.Int("patterns", len(next)))
 	resp := make(chan configureResult, 1)
 	m.cmdCh <- configureCmd{sid: id, next: next, resp: resp}
 
@@ -218,10 +218,6 @@ func (m *Manager) handleAttach(cmd attachCmd) {
 	s.attached = true
 	s.disarmIdleTimer()
 
-	for id := range s.bound {
-		m.router.RegisterRoute(id, cout)
-	}
-
 	cmd.resp <- attachResult{cin: cin, cout: cout, err: nil}
 }
 
@@ -235,10 +231,6 @@ func (m *Manager) handleDetach(cmd detachCmd) {
 	if !s.attached {
 		cmd.resp <- detachResult{ErrClientNotAttached}
 		return
-	}
-
-	for id := range s.bound {
-		m.router.DeregisterRoute(id, s.outChannel)
 	}
 
 	s.clearChannels()
@@ -260,170 +252,26 @@ func (m *Manager) handleDetach(cmd detachCmd) {
 // handleConfigure updates the session bindings, starting and stopping streams as needed. Currently only supports Raw streams.
 // TODO: Change this configuration to be an atomic operation, so that partial failures do not end in a half-configured state.
 func (m *Manager) handleConfigure(cmd configureCmd) {
-	s, ok := m.sessions[cmd.sid]
+	_, ok := m.sessions[cmd.sid]
 	if !ok {
 		cmd.resp <- configureResult{ErrSessionNotFound}
 		return
 	}
 
-	toAdd, toRemove := identifierSetDifferences(identifierMapToSlice(s.bound), cmd.next)
-
-	pendingSub := make(map[domain.Identifier]<-chan error)
-	pendingUnsub := make(map[domain.Identifier]<-chan error)
-	var added, removed []domain.Identifier
 	var errs error
-
-	// Adds
-	for _, id := range toAdd {
-		pName, subject, ok := id.ProviderSubject()
-		if !ok || subject == "" || pName == "" {
-			errs = errors.Join(errs, fmt.Errorf("invalid identifier: %s", id.Key()))
-			continue
-		}
-		p, ok := m.providers[pName]
-		if !ok {
-			errs = errors.Join(errs, fmt.Errorf("provider not found: %s", pName))
-			continue
-		}
-		if p.IsStreamActive(subject) {
-			s.bound[id] = struct{}{}
-			added = append(added, id)
-			continue
-		}
-		pendingSub[id] = p.Subscribe(subject)
-	}
-
-	// Removes
-	for _, id := range toRemove {
-		pName, subject, ok := id.ProviderSubject()
-		if !ok || subject == "" || pName == "" {
-			errs = errors.Join(errs, fmt.Errorf("invalid identifier: %s", id.Key()))
-			continue
-		}
-		p, ok := m.providers[pName]
-		if !ok {
-			errs = errors.Join(errs, fmt.Errorf("provider not found: %s", pName))
-			continue
-		}
-		stillNeeded := false
-		for _, other := range m.sessions {
-			if other.id == s.id {
-				continue
-			}
-			if _, bound := other.bound[id]; bound {
-				stillNeeded = true
-				break
-			}
-		}
-		if stillNeeded {
-			delete(s.bound, id)
-			removed = append(removed, id)
-			continue
-		}
-		pendingUnsub[id] = p.Unsubscribe(subject)
-	}
-
-	// Wait for subscribes
-	for id, ch := range pendingSub {
-		if err := <-ch; err != nil {
-			errs = errors.Join(errs, fmt.Errorf("failed to subscribe to %s: %w", id.Key(), err))
-			continue
-		}
-		s.bound[id] = struct{}{}
-		added = append(added, id)
-	}
-
-	// Wait for unsubscribes
-	for id, ch := range pendingUnsub {
-		if err := <-ch; err != nil {
-			errs = errors.Join(errs, fmt.Errorf("failed to unsubscribe from %s: %w", id.Key(), err))
-			continue
-		}
-		delete(s.bound, id)
-		removed = append(removed, id)
-	}
-
-	if s.attached {
-		if s.inChannel == nil || s.outChannel == nil {
-			errs = errors.Join(errs, fmt.Errorf("channels do not exist despite attached state")) // error should never be hit
-			slog.Default().Error("no channels despite attached state", slog.String("cmp", "manager"), slog.String("session", cmd.sid.String()))
-		} else {
-			for _, id := range added {
-				m.router.RegisterRoute(id, s.outChannel)
-			}
-			for _, id := range removed {
-				m.router.DeregisterRoute(id, s.outChannel)
-			}
-		}
-	}
 
 	cmd.resp <- configureResult{err: errs}
 }
 
 // handleCloseSession closes and removes the session, cleaning up all bindings.
 func (m *Manager) handleCloseSession(cmd closeSessionCmd) {
-	s, ok := m.sessions[cmd.sid]
+	_, ok := m.sessions[cmd.sid]
 	if !ok {
 		cmd.resp <- closeSessionResult{err: ErrSessionNotFound}
 		return
 	}
 
 	var errs error
-
-	// Deregister attached routes
-	if s.attached {
-		if s.outChannel == nil {
-			errs = errors.Join(errs, fmt.Errorf("channels do not exist despite attached state"))
-			slog.Default().Error("no channels despite attached state", slog.String("cmp", "manager"), slog.String("session", cmd.sid.String()))
-		} else {
-			for id := range s.bound {
-				m.router.DeregisterRoute(id, s.outChannel)
-			}
-		}
-	}
-
-	// Unsubscribe from all streams if no other session needs them.
-	pendingUnsub := make(map[domain.Identifier]<-chan error)
-
-	for id := range s.bound {
-		pName, subject, ok := id.ProviderSubject()
-		if !ok || subject == "" || pName == "" {
-			errs = errors.Join(errs, fmt.Errorf("invalid identifier: %s", id.Key()))
-			continue
-		}
-		p, ok := m.providers[pName]
-		if !ok {
-			errs = errors.Join(errs, fmt.Errorf("provider not found: %s", pName))
-			continue
-		}
-
-		stillNeeded := false
-		for _, other := range m.sessions {
-			if other.id == s.id {
-				continue
-			}
-			if _, bound := other.bound[id]; bound {
-				stillNeeded = true
-				break
-			}
-		}
-		if stillNeeded {
-			continue
-		}
-
-		pendingUnsub[id] = p.Unsubscribe(subject)
-	}
-
-	for id, ch := range pendingUnsub {
-		if err := <-ch; err != nil {
-			errs = errors.Join(errs, fmt.Errorf("failed to unsubscribe from %s: %w", id.Key(), err))
-		}
-	}
-
-	// Stop timers and channels, remove session.
-	s.disarmIdleTimer()
-	s.clearChannels()
-	delete(m.sessions, s.id)
 
 	cmd.resp <- closeSessionResult{err: errs}
 }
