@@ -5,29 +5,9 @@ import (
 
 	"github.com/google/uuid"
 	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/domain"
-	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/provider"
 )
 
 // Commands posted into the manager loop. One struct per action.
-type addProviderCmd struct {
-	name string
-	p    provider.Provider
-	resp chan addProviderResult
-}
-
-type addProviderResult struct {
-	err error
-}
-
-type removeProviderCmd struct {
-	name string
-	resp chan removeProviderResult
-}
-
-type removeProviderResult struct {
-	err error
-}
-
 type newSessionCmd struct {
 	idleAfter time.Duration
 	resp      chan newSessionResult

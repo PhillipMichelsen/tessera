@@ -11,7 +11,6 @@ import (
 
 	"github.com/google/uuid"
 	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/domain"
-	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/provider"
 	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/router"
 	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/worker"
 )
@@ -28,8 +27,7 @@ type Manager struct {
 	cmdCh chan any
 
 	// State (loop-owned)
-	providers map[string]provider.Provider
-	sessions  map[uuid.UUID]*session
+	sessions map[uuid.UUID]*session
 
 	// Router
 	router *router.Router
@@ -38,10 +36,9 @@ type Manager struct {
 // NewManager creates a manager and starts its run loop.
 func NewManager(router *router.Router, workerRegistry *worker.Registry) *Manager {
 	m := &Manager{
-		cmdCh:     make(chan any, 256),
-		providers: make(map[string]provider.Provider),
-		sessions:  make(map[uuid.UUID]*session),
-		router:    router,
+		cmdCh:    make(chan any, 256),
+		sessions: make(map[uuid.UUID]*session),
+		router:   router,
 	}
 	go router.Start()
 	go m.run()
@@ -52,30 +49,6 @@ func NewManager(router *router.Router, workerRegistry *worker.Registry) *Manager
 }
 
 // API
-
-// AddProvider adds and starts a new provider.
-func (m *Manager) AddProvider(name string, p provider.Provider) error {
-	slog.Default().Debug("add provider request", slog.String("cmp", "manager"), slog.String("name", name))
-	resp := make(chan addProviderResult, 1)
-	m.cmdCh <- addProviderCmd{name: name, p: p, resp: resp}
-
-	r := <-resp
-
-	slog.Default().Info("provider added", slog.String("cmp", "manager"), slog.String("name", name))
-	return r.err
-}
-
-// RemoveProvider stops and removes a provider, cleaning up all sessions.
-func (m *Manager) RemoveProvider(name string) error {
-	slog.Default().Debug("remove provider request", slog.String("cmp", "manager"), slog.String("name", name))
-	resp := make(chan removeProviderResult, 1)
-	m.cmdCh <- removeProviderCmd{name: name, resp: resp}
-
-	r := <-resp
-
-	slog.Default().Info("provider removed", slog.String("cmp", "manager"), slog.String("name", name))
-	return r.err
-}
 
 // NewSession creates a new session with the given idle timeout.
 func (m *Manager) NewSession(idleAfter time.Duration) uuid.UUID {
@@ -142,10 +115,6 @@ func (m *Manager) run() {
 	for {
 		msg := <-m.cmdCh
 		switch c := msg.(type) {
-		case addProviderCmd:
-			m.handleAddProvider(c)
-		case removeProviderCmd:
-			m.handleRemoveProvider(c)
 		case newSessionCmd:
 			m.handleNewSession(c)
 		case attachCmd:
@@ -161,28 +130,6 @@ func (m *Manager) run() {
 }
 
 // Command handlers, run in loop goroutine. With a single goroutine, no locking is needed.
-
-// handleAddProvider adds and starts a new provider.
-func (m *Manager) handleAddProvider(cmd addProviderCmd) {
-	if _, ok := m.providers[cmd.name]; ok {
-		slog.Default().Warn("provider already exists", slog.String("cmp", "manager"), slog.String("name", cmd.name))
-		cmd.resp <- addProviderResult{err: fmt.Errorf("provider exists: %s", cmd.name)}
-		return
-	}
-	if err := cmd.p.Start(); err != nil {
-		slog.Default().Warn("failed to start provider", slog.String("cmp", "manager"), slog.String("name", cmd.name), slog.String("err", err.Error()))
-		cmd.resp <- addProviderResult{err: fmt.Errorf("failed to start provider %s: %w", cmd.name, err)}
-		return
-	}
-	m.providers[cmd.name] = cmd.p
-	cmd.resp <- addProviderResult{err: nil}
-}
-
-// handleRemoveProvider stops and removes a provider, removing the bindings from all sessions that use streams from it.
-// TODO: Implement this function.
-func (m *Manager) handleRemoveProvider(_ removeProviderCmd) {
-	panic("unimplemented")
-}
 
 // handleNewSession creates a new session with the given idle timeout. The idle timeout is typically not set by the client, but by the server configuration.
 func (m *Manager) handleNewSession(cmd newSessionCmd) {
