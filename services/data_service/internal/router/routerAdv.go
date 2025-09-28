@@ -100,7 +100,7 @@ func (r *Router) Incoming() chan<- domain.Message { return r.incoming }
 
 func (r *Router) RegisterPattern(pat domain.Pattern, ch chan<- domain.Message) {
 	// Inline ensurePartition
-	ns := pat.Namespace
+	ns, _, _, _ := pat.Parse() // Note: Error ignored, pattern assumed to be valid if passed to router
 	r.mu.RLock()
 	p := r.partitions[ns]
 	r.mu.RUnlock()
@@ -119,7 +119,8 @@ func (r *Router) RegisterPattern(pat domain.Pattern, ch chan<- domain.Message) {
 
 func (r *Router) DeregisterPattern(pat domain.Pattern, ch chan<- domain.Message) {
 	r.mu.RLock()
-	p := r.partitions[pat.Namespace]
+	ns, _, _, _ := pat.Parse()
+	p := r.partitions[ns]
 	r.mu.RUnlock()
 	if p != nil {
 		p.deregisterRoute(pat, ch)
