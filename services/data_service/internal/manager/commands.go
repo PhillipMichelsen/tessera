@@ -8,47 +8,36 @@ import (
 )
 
 // Commands posted into the manager loop. One struct per action.
-type newSessionCmd struct {
+type createSessionCommand struct {
 	idleAfter time.Duration
-	resp      chan newSessionResult
+	resp      chan createSessionResult
 }
 
-type newSessionResult struct {
-	id uuid.UUID
+type createSessionResult struct {
+	sid uuid.UUID
 }
 
-type attachCmd struct {
-	sid           uuid.UUID
-	inBuf, outBuf int
-	resp          chan attachResult
-}
-
-type attachResult struct {
-	cin  chan<- domain.Message
-	cout <-chan domain.Message
-	err  error
-}
-
-type detachCmd struct {
+type aquireSessionIOCommand struct {
 	sid  uuid.UUID
-	resp chan detachResult
+	resp chan aquireSessionIOCommand
 }
 
-type detachResult struct {
-	err error
+type aquireSessionIOResult struct {
+	sessionIO SessionIO
+	err       error
 }
 
-type configureCmd struct {
+type configureSessionCommand struct {
 	sid  uuid.UUID
 	next []domain.Pattern
-	resp chan configureResult
+	resp chan configureSessionResult
 }
 
-type configureResult struct {
+type configureSessionResult struct {
 	err error
 }
 
-type closeSessionCmd struct {
+type closeSessionCommand struct {
 	sid  uuid.UUID
 	resp chan closeSessionResult
 }

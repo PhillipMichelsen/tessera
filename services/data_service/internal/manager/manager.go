@@ -50,47 +50,35 @@ func NewManager(router *router.Router, workerRegistry *worker.Registry) *Manager
 
 // API
 
-// NewSession creates a new session with the given idle timeout.
-func (m *Manager) NewSession(idleAfter time.Duration) uuid.UUID {
-	slog.Default().Debug("new session request", slog.String("cmp", "manager"), slog.Duration("idle_after", idleAfter))
-	resp := make(chan newSessionResult, 1)
-	m.cmdCh <- newSessionCmd{idleAfter: idleAfter, resp: resp}
+// CreateSession creates a new session with the given idle timeout.
+func (m *Manager) CreateSession(idleAfter time.Duration) uuid.UUID {
+	slog.Default().Debug("create session request", slog.String("cmp", "manager"), slog.Duration("idle_after", idleAfter))
+	resp := make(chan createSessionResult, 1)
+	m.cmdCh <- createSessionCommand{idleAfter: idleAfter, resp: resp}
 
 	r := <-resp
 
-	slog.Default().Info("new session created", slog.String("cmp", "manager"), slog.String("session", r.id.String()))
-	return r.id
+	slog.Default().Info("new session created", slog.String("cmp", "manager"), slog.String("session", r.sid.String()))
+	return r.sid
 }
 
-// AttachClient attaches a client to a session, creates and returns client channels for the session.
-func (m *Manager) AttachClient(id uuid.UUID, inBuf, outBuf int) (chan<- domain.Message, <-chan domain.Message, error) {
-	slog.Default().Debug("attach client request", slog.String("cmp", "manager"), slog.String("session", id.String()), slog.Int("in_buf", inBuf), slog.Int("out_buf", outBuf))
-	resp := make(chan attachResult, 1)
-	m.cmdCh <- attachCmd{sid: id, inBuf: inBuf, outBuf: outBuf, resp: resp}
+func (m *Manager) AquireSessionIO(sid uuid.UUID) (SessionIO, error) {
+	slog.Default().Debug("aquire session io request", slog.String("cmp", "manager"), slog.String("session", sid.String()))
+	resp := make(chan aquireSessionIOResult, 1)
+	m.cmdCh <- aquireSessionIOCommand{sid: sid}
 
 	r := <-resp
 
-	slog.Default().Info("client attached", slog.String("cmp", "manager"), slog.String("session", id.String()))
-	return r.cin, r.cout, r.err
-}
-
-// DetachClient detaches the client from the session, closes client channels and arms timeout.
-func (m *Manager) DetachClient(id uuid.UUID) error {
-	slog.Default().Debug("detach client request", slog.String("cmp", "manager"), slog.String("session", id.String()))
-	resp := make(chan detachResult, 1)
-	m.cmdCh <- detachCmd{sid: id, resp: resp}
-
-	r := <-resp
-
-	slog.Default().Info("client detached", slog.String("cmp", "manager"), slog.String("session", id.String()))
-	return r.err
+	slog.Default().Info("session io aquired", slog.String("cmp", "manager"), slog.String("session", sid.String()))
+	return r.sessionIO, r.err
 }
 
 // ConfigureSession sets the next set of patterns for the session, starting and stopping streams as needed.
+// TODO: Replace 'next' parameter with a session configuration struct.
 func (m *Manager) ConfigureSession(id uuid.UUID, next []domain.Pattern) error {
 	slog.Default().Debug("configure session request", slog.String("cmp", "manager"), slog.String("session", id.String()), slog.Int("patterns", len(next)))
-	resp := make(chan configureResult, 1)
-	m.cmdCh <- configureCmd{sid: id, next: next, resp: resp}
+	resp := make(chan configureSessionResult, 1)
+	m.cmdCh <- configureSessionCommand{sid: id, next: next, resp: resp}
 
 	r := <-resp
 
@@ -102,7 +90,7 @@ func (m *Manager) ConfigureSession(id uuid.UUID, next []domain.Pattern) error {
 func (m *Manager) CloseSession(id uuid.UUID) error {
 	slog.Default().Debug("close session request", slog.String("cmp", "manager"), slog.String("session", id.String()))
 	resp := make(chan closeSessionResult, 1)
-	m.cmdCh <- closeSessionCmd{sid: id, resp: resp}
+	m.cmdCh <- closeSessionCommand{sid: id, resp: resp}
 
 	r := <-resp
 
@@ -110,22 +98,30 @@ func (m *Manager) CloseSession(id uuid.UUID) error {
 	return r.err
 }
 
-// TODO: Add worker spawn/removal/configure public methods and command types
+func (m *Manager) NewWorker(workerType string) (uuid.UUID, error) {
+	return uuid.Nil, nil
+}
+
+func (m *Manager) ConfigureWorker(id uuid.UUID, config any) error {
+	return nil
+}
+
+func (m *Manager) TerminateWorker(id uuid.UUID) error
 
 // The main loop of the manager, processing commands serially.
 func (m *Manager) run() {
 	for {
 		msg := <-m.cmdCh
 		switch c := msg.(type) {
-		case newSessionCmd:
+		case createSessionCommand:
 			m.handleNewSession(c)
-		case attachCmd:
+		case attachSessionCommand:
 			m.handleAttach(c)
-		case detachCmd:
+		case detachSessionCommand:
 			m.handleDetach(c)
-		case configureCmd:
+		case configureSessionCommand:
 			m.handleConfigure(c)
-		case closeSessionCmd:
+		case closeSessionCommand:
 			m.handleCloseSession(c)
 		}
 	}
@@ -134,32 +130,32 @@ func (m *Manager) run() {
 // Command handlers, run in loop goroutine. With a single goroutine, no locking is needed.
 
 // handleNewSession creates a new session with the given idle timeout. The idle timeout is typically not set by the client, but by the server configuration.
-func (m *Manager) handleNewSession(cmd newSessionCmd) {
+func (m *Manager) handleNewSession(cmd createSessionCommand) {
 	s := newSession(cmd.idleAfter)
 
 	// Only arm the idle timer if the timeout is positive. We allow a zero or negative timeout to indicate "never timeout".
 	if s.idleAfter <= 0 {
 		s.armIdleTimer(func() {
 			resp := make(chan closeSessionResult, 1)
-			m.cmdCh <- closeSessionCmd{sid: s.id, resp: resp}
+			m.cmdCh <- closeSessionCommand{sid: s.id, resp: resp}
 			<-resp
 		})
 	}
 
 	m.sessions[s.id] = s
 
-	cmd.resp <- newSessionResult{id: s.id}
+	cmd.resp <- createSessionResult{sid: s.id}
 }
 
 // handleAttach attaches a client to a session, creating new client channels for the session. If the session is already attached, returns an error.
-func (m *Manager) handleAttach(cmd attachCmd) {
+func (m *Manager) handleAttach(cmd attachSessionCommand) {
 	s, ok := m.sessions[cmd.sid]
 	if !ok {
-		cmd.resp <- attachResult{nil, nil, ErrSessionNotFound}
+		cmd.resp <- attachSessionResult{nil, nil, ErrSessionNotFound}
 		return
 	}
 	if s.attached {
-		cmd.resp <- attachResult{nil, nil, ErrClientAlreadyAttached}
+		cmd.resp <- attachSessionResult{nil, nil, ErrClientAlreadyAttached}
 		return
 	}
 
@@ -167,18 +163,18 @@ func (m *Manager) handleAttach(cmd attachCmd) {
 	s.attached = true
 	s.disarmIdleTimer()
 
-	cmd.resp <- attachResult{cin: cin, cout: cout, err: nil}
+	cmd.resp <- attachSessionResult{cin: cin, cout: cout, err: nil}
 }
 
 // handleDetach detaches the client from the session, closing client channels and arming the idle timeout. If the session is not attached, returns an error.
-func (m *Manager) handleDetach(cmd detachCmd) {
+func (m *Manager) handleDetach(cmd detachSessionCommand) {
 	s, ok := m.sessions[cmd.sid]
 	if !ok {
-		cmd.resp <- detachResult{ErrSessionNotFound}
+		cmd.resp <- detachSessionResult{ErrSessionNotFound}
 		return
 	}
 	if !s.attached {
-		cmd.resp <- detachResult{ErrClientNotAttached}
+		cmd.resp <- detachSessionResult{ErrClientNotAttached}
 		return
 	}
 
@@ -188,33 +184,33 @@ func (m *Manager) handleDetach(cmd detachCmd) {
 	if s.idleAfter > 0 {
 		s.armIdleTimer(func() {
 			resp := make(chan closeSessionResult, 1)
-			m.cmdCh <- closeSessionCmd{sid: s.id, resp: resp}
+			m.cmdCh <- closeSessionCommand{sid: s.id, resp: resp}
 			<-resp
 		})
 	}
 
 	s.attached = false
 
-	cmd.resp <- detachResult{nil}
+	cmd.resp <- detachSessionResult{nil}
 }
 
 // handleConfigure updates the session bindings, starting and stopping streams as needed. Currently only supports Raw streams.
 // TODO: Change this configuration to be an atomic operation, so that partial failures do not end in a half-configured state.
-func (m *Manager) handleConfigure(cmd configureCmd) {
+func (m *Manager) handleConfigure(cmd configureSessionCommand) {
 	_, ok := m.sessions[cmd.sid]
 	if !ok {
-		cmd.resp <- configureResult{ErrSessionNotFound}
+		cmd.resp <- configureSessionResult{ErrSessionNotFound}
 		return
 	}
 
 	var errs error
 	// TODO: IMPLEMENT!!!
 
-	cmd.resp <- configureResult{err: errs}
+	cmd.resp <- configureSessionResult{err: errs}
 }
 
 // handleCloseSession closes and removes the session, cleaning up all bindings.
-func (m *Manager) handleCloseSession(cmd closeSessionCmd) {
+func (m *Manager) handleCloseSession(cmd closeSessionCommand) {
 	_, ok := m.sessions[cmd.sid]
 	if !ok {
 		cmd.resp <- closeSessionResult{err: ErrSessionNotFound}
@@ -222,6 +218,7 @@ func (m *Manager) handleCloseSession(cmd closeSessionCmd) {
 	}
 
 	var errs error
+	// TODO: Implement!
 
 	cmd.resp <- closeSessionResult{err: errs}
 }
