@@ -7,43 +7,55 @@ import (
 	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/domain"
 )
 
-const (
-	defaultClientBuf = 256
-)
-
-// session holds per-session state.
-// Owned by the manager loop. So we do not need a mutex.
+// session is manager-owned state and implements SessionIO.
 type session struct {
-	id uuid.UUID
-
-	inChannel  chan domain.Message // caller writes
-	outChannel chan domain.Message // caller reads
-
-	bound map[domain.Identifier]struct{}
-
+	id        uuid.UUID
 	attached  bool
 	idleAfter time.Duration
 	idleTimer *time.Timer
+
+	ingress  chan<- domain.Message // router.Incoming(); router-owned
+	egress   chan domain.Message   // per-lease; owned here
+	done     chan struct{}         // per-lease; closed on Release
+	released bool                  // guards idempotency inside actor
 }
 
-func newSession(idleAfter time.Duration) *session {
+func newSession(idleAfter time.Duration, ingress chan<- domain.Message) *session {
 	return &session{
 		id:        uuid.New(),
-		bound:     make(map[domain.Identifier]struct{}),
-		attached:  false,
 		idleAfter: idleAfter,
+		ingress:   ingress,
 	}
 }
 
-// armIdleTimer sets the idle timer to call f after idleAfter duration (resets existing timer if any).
+// Lease lifecycle (manager calls)
+
+// openEgress allocates a fresh egress and resets release state.
+func (s *session) openEgress(buf int) {
+	s.egress = make(chan domain.Message, buf)
+	s.done = make(chan struct{})
+	s.released = false
+}
+
+// closeEgress closes and nils the current egress.
+func (s *session) closeEgress() {
+	if s.egress != nil {
+		close(s.egress)
+		s.egress = nil
+	}
+}
+
+// Idle timer control
+
 func (s *session) armIdleTimer(f func()) {
 	if s.idleTimer != nil {
 		s.idleTimer.Stop()
 	}
-	s.idleTimer = time.AfterFunc(s.idleAfter, f)
+	if s.idleAfter > 0 {
+		s.idleTimer = time.AfterFunc(s.idleAfter, f)
+	}
 }
 
-// disarmIdleTimer stops and nils the idle timer if any. This call is idempotent.
 func (s *session) disarmIdleTimer() {
 	if s.idleTimer != nil {
 		s.idleTimer.Stop()
@@ -51,27 +63,29 @@ func (s *session) disarmIdleTimer() {
 	}
 }
 
-// generateNewChannels creates new in/out channels for the session, will not close existing channels.
-func (s *session) generateNewChannels(inBuf, outBuf int) (chan domain.Message, chan domain.Message) {
-	if inBuf <= 0 {
-		inBuf = defaultClientBuf
+func (s *session) Send(m domain.Message) error {
+	select {
+	case <-s.done:
+		return ErrSessionReleased
+	case s.ingress <- m:
+		return nil
 	}
-	if outBuf <= 0 {
-		outBuf = defaultClientBuf
-	}
-	s.inChannel = make(chan domain.Message, inBuf)
-	s.outChannel = make(chan domain.Message, outBuf)
-	return s.inChannel, s.outChannel
 }
 
-// clearChannels closes and nils the in/out channels.
-func (s *session) clearChannels() {
-	if s.inChannel != nil {
-		close(s.inChannel)
-		s.inChannel = nil
+func (s *session) Receive() (domain.Message, error) {
+	msg, ok := <-s.egress
+	if !ok {
+		return domain.Message{}, ErrSessionReleased
 	}
-	if s.outChannel != nil {
-		close(s.outChannel)
-		s.outChannel = nil
+	return msg, nil
+}
+
+func (s *session) Release() {
+	if s.released {
+		return
 	}
+	if s.done != nil {
+		close(s.done) // stop Send immediately
+	}
+	s.released = true
 }
