@@ -17,13 +17,25 @@ type createSessionResult struct {
 	sid uuid.UUID
 }
 
-type aquireSessionIOCommand struct {
+type leaseReceiverCommand struct {
 	sid  uuid.UUID
-	resp chan aquireSessionIOCommand
+	resp chan leaseReceiverResult
 }
 
-type aquireSessionIOResult struct {
-	sessionIO SessionIO
+type leaseReceiverResult struct {
+	receiveFunc func() (domain.Message, error)
+	closeFunc   func()
+	err         error
+}
+
+type leaseSenderCommand struct {
+	sid  uuid.UUID
+	resp chan leaseSenderResult
+}
+
+type leaseSenderResult struct {
+	sendFunc  func(domain.Message) error
+	closeFunc func()
 	err       error
 }
 

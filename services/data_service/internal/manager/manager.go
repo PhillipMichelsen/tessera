@@ -17,8 +17,7 @@ import (
 
 var (
 	ErrSessionNotFound       = errors.New("session not found")
-	ErrClientAlreadyAttached = errors.New("client already attached")
-	ErrClientNotAttached     = errors.New("client not attached")
+	ErrSessionAlreadyAquired = errors.New("session already aquried")
 )
 
 // Manager is a single-goroutine actor that owns all state.
@@ -62,15 +61,30 @@ func (m *Manager) CreateSession(idleAfter time.Duration) uuid.UUID {
 	return r.sid
 }
 
-func (m *Manager) AquireSessionIO(sid uuid.UUID) (SessionIO, error) {
-	slog.Default().Debug("aquire session io request", slog.String("cmp", "manager"), slog.String("session", sid.String()))
-	resp := make(chan aquireSessionIOResult, 1)
-	m.cmdCh <- aquireSessionIOCommand{sid: sid}
+// LeaseReceiver leases a receiver for the session and returns the receive func along with a close func.
+// A session only permits one receiver to be lease at a time (may be subject to change)
+func (m *Manager) LeaseReceiver(sid uuid.UUID) (func() (domain.Message, error), func(), error) {
+	slog.Default().Debug("lease receiver request", slog.String("cmp", "manager"), slog.String("session", sid.String()))
+	resp := make(chan leaseReceiverResult, 1)
+	m.cmdCh <- leaseReceiverCommand{sid: sid}
 
 	r := <-resp
 
-	slog.Default().Info("session io aquired", slog.String("cmp", "manager"), slog.String("session", sid.String()))
-	return r.sessionIO, r.err
+	slog.Default().Info("receiver leased", slog.String("cmp", "manager"), slog.String("session", sid.String()))
+	return r.receiveFunc, r.closeFunc, r.err
+}
+
+// LeaseSender leases a sender for the session and returns the send func along with a close func.
+// A session only permits one sender to be lease at a time (may be subject to change)
+func (m *Manager) LeaseSender(sid uuid.UUID) (func(domain.Message) error, func(), error) {
+	slog.Default().Debug("lease sender request", slog.String("cmp", "manager"), slog.String("session", sid.String()))
+	resp := make(chan leaseSenderResult, 1)
+	m.cmdCh <- leaseSenderCommand{sid: sid}
+
+	r := <-resp
+
+	slog.Default().Info("sender leased", slog.String("cmp", "manager"), slog.String("session", sid.String()))
+	return r.sendFunc, r.closeFunc, r.err
 }
 
 // ConfigureSession sets the next set of patterns for the session, starting and stopping streams as needed.
@@ -115,10 +129,10 @@ func (m *Manager) run() {
 		switch c := msg.(type) {
 		case createSessionCommand:
 			m.handleNewSession(c)
-		case attachSessionCommand:
-			m.handleAttach(c)
-		case detachSessionCommand:
-			m.handleDetach(c)
+		case leaseReceiverCommand:
+			m.handleLeaseReceiever(c)
+		case leaseSenderCommand:
+			m.handleLeaseSender(c)
 		case configureSessionCommand:
 			m.handleConfigure(c)
 		case closeSessionCommand:
@@ -131,7 +145,7 @@ func (m *Manager) run() {
 
 // handleNewSession creates a new session with the given idle timeout. The idle timeout is typically not set by the client, but by the server configuration.
 func (m *Manager) handleNewSession(cmd createSessionCommand) {
-	s := newSession(cmd.idleAfter)
+	s := newSession(time.Second*10, m.router.Incoming())
 
 	// Only arm the idle timer if the timeout is positive. We allow a zero or negative timeout to indicate "never timeout".
 	if s.idleAfter <= 0 {
@@ -147,51 +161,22 @@ func (m *Manager) handleNewSession(cmd createSessionCommand) {
 	cmd.resp <- createSessionResult{sid: s.id}
 }
 
-// handleAttach attaches a client to a session, creating new client channels for the session. If the session is already attached, returns an error.
-func (m *Manager) handleAttach(cmd attachSessionCommand) {
-	s, ok := m.sessions[cmd.sid]
+func (m *Manager) handleLeaseReceiever(cmd leaseReceiverCommand) {
+	_, ok := m.sessions[cmd.sid]
 	if !ok {
-		cmd.resp <- attachSessionResult{nil, nil, ErrSessionNotFound}
-		return
-	}
-	if s.attached {
-		cmd.resp <- attachSessionResult{nil, nil, ErrClientAlreadyAttached}
-		return
+		cmd.resp <- leaseReceiverResult{nil, nil, ErrSessionNotFound}
 	}
 
-	cin, cout := s.generateNewChannels(cmd.inBuf, cmd.outBuf)
-	s.attached = true
-	s.disarmIdleTimer()
-
-	cmd.resp <- attachSessionResult{cin: cin, cout: cout, err: nil}
+	// TODO: Complete lease receiver
 }
 
-// handleDetach detaches the client from the session, closing client channels and arming the idle timeout. If the session is not attached, returns an error.
-func (m *Manager) handleDetach(cmd detachSessionCommand) {
-	s, ok := m.sessions[cmd.sid]
+func (m *Manager) handleLeaseSender(cmd leaseSenderCommand) {
+	_, ok := m.sessions[cmd.sid]
 	if !ok {
-		cmd.resp <- detachSessionResult{ErrSessionNotFound}
-		return
-	}
-	if !s.attached {
-		cmd.resp <- detachSessionResult{ErrClientNotAttached}
-		return
+		cmd.resp <- leaseSenderResult{nil, nil, ErrSessionNotFound}
 	}
 
-	s.clearChannels()
-
-	// Only rearm the idle timer if the timeout is positive.
-	if s.idleAfter > 0 {
-		s.armIdleTimer(func() {
-			resp := make(chan closeSessionResult, 1)
-			m.cmdCh <- closeSessionCommand{sid: s.id, resp: resp}
-			<-resp
-		})
-	}
-
-	s.attached = false
-
-	cmd.resp <- detachSessionResult{nil}
+	// TODO: Complete lease sender
 }
 
 // handleConfigure updates the session bindings, starting and stopping streams as needed. Currently only supports Raw streams.

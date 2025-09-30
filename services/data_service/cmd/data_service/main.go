@@ -51,9 +51,8 @@ func main() {
 
 	// Setup
 	wr := worker.NewRegistry()
-
 	r, _ := router.NewRouter("actor", 2048, 512)
-	m := manager.NewManager(r, wr)
+	_ = manager.NewManager(r, wr)
 
 	select {}
 }
