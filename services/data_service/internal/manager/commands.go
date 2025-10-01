@@ -1,16 +1,13 @@
 package manager
 
 import (
-	"time"
-
 	"github.com/google/uuid"
 	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/domain"
 )
 
 // Commands posted into the manager loop. One struct per action.
 type createSessionCommand struct {
-	idleAfter time.Duration
-	resp      chan createSessionResult
+	resp chan createSessionResult
 }
 
 type createSessionResult struct {
@@ -24,7 +21,7 @@ type leaseReceiverCommand struct {
 
 type leaseReceiverResult struct {
 	receiveFunc func() (domain.Message, error)
-	closeFunc   func()
+	releaseFunc func()
 	err         error
 }
 
@@ -34,15 +31,15 @@ type leaseSenderCommand struct {
 }
 
 type leaseSenderResult struct {
-	sendFunc  func(domain.Message) error
-	closeFunc func()
-	err       error
+	sendFunc    func(domain.Message) error
+	releaseFunc func()
+	err         error
 }
 
 type configureSessionCommand struct {
-	sid  uuid.UUID
-	next []domain.Pattern
-	resp chan configureSessionResult
+	sid    uuid.UUID
+	config SessionConfig
+	resp   chan configureSessionResult
 }
 
 type configureSessionResult struct {

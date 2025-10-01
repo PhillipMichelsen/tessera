@@ -1,13 +1,9 @@
-// Package manager implements the core orchestration logic for data providers and client sessions
-// in the tessera data_service. It manages provider registration, session lifecycle, client attachment,
-// stream configuration, and routing of messages between clients and providers.
+// Package manager is the manager package!!!
 package manager
 
 import (
 	"errors"
-	"fmt"
 	"log/slog"
-	"time"
 
 	"github.com/google/uuid"
 	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/domain"
@@ -15,122 +11,91 @@ import (
 	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/worker"
 )
 
-var (
-	ErrSessionNotFound       = errors.New("session not found")
-	ErrSessionAlreadyAquired = errors.New("session already aquried")
-)
+var ErrSessionNotFound = errors.New("session not found")
 
 // Manager is a single-goroutine actor that owns all state.
 type Manager struct {
-	// Command channel
-	cmdCh chan any
-
-	// State (loop-owned)
+	cmdCh    chan any
 	sessions map[uuid.UUID]*session
-
-	// Router
-	router *router.Router
+	router   *router.Router
 }
 
 // NewManager creates a manager and starts its run loop.
-func NewManager(router *router.Router, workerRegistry *worker.Registry) *Manager {
+func NewManager(r *router.Router, _ *worker.Registry) *Manager {
 	m := &Manager{
 		cmdCh:    make(chan any, 256),
 		sessions: make(map[uuid.UUID]*session),
-		router:   router,
+		router:   r,
 	}
-	go router.Start()
+	go r.Start()
 	go m.run()
-
 	slog.Default().Info("manager started", slog.String("cmp", "manager"))
-
 	return m
 }
 
 // API
 
-// CreateSession creates a new session with the given idle timeout.
-func (m *Manager) CreateSession(idleAfter time.Duration) uuid.UUID {
-	slog.Default().Debug("create session request", slog.String("cmp", "manager"), slog.Duration("idle_after", idleAfter))
+// CreateSession creates a new session. Arms a 1m idle timer immediately.
+func (m *Manager) CreateSession() uuid.UUID {
+	slog.Default().Debug("create session request", slog.String("cmp", "manager"))
 	resp := make(chan createSessionResult, 1)
-	m.cmdCh <- createSessionCommand{idleAfter: idleAfter, resp: resp}
-
+	m.cmdCh <- createSessionCommand{resp: resp}
 	r := <-resp
-
 	slog.Default().Info("new session created", slog.String("cmp", "manager"), slog.String("session", r.sid.String()))
 	return r.sid
 }
 
-// LeaseReceiver leases a receiver for the session and returns the receive func along with a close func.
-// A session only permits one receiver to be lease at a time (may be subject to change)
+// LeaseReceiver leases a receiver and returns the receive func and its close func.
 func (m *Manager) LeaseReceiver(sid uuid.UUID) (func() (domain.Message, error), func(), error) {
 	slog.Default().Debug("lease receiver request", slog.String("cmp", "manager"), slog.String("session", sid.String()))
 	resp := make(chan leaseReceiverResult, 1)
-	m.cmdCh <- leaseReceiverCommand{sid: sid}
-
+	m.cmdCh <- leaseReceiverCommand{sid: sid, resp: resp}
 	r := <-resp
-
-	slog.Default().Info("receiver leased", slog.String("cmp", "manager"), slog.String("session", sid.String()))
-	return r.receiveFunc, r.closeFunc, r.err
+	return r.receiveFunc, r.releaseFunc, r.err
 }
 
-// LeaseSender leases a sender for the session and returns the send func along with a close func.
-// A session only permits one sender to be lease at a time (may be subject to change)
+// LeaseSender leases a sender and returns the send func and its close func.
 func (m *Manager) LeaseSender(sid uuid.UUID) (func(domain.Message) error, func(), error) {
 	slog.Default().Debug("lease sender request", slog.String("cmp", "manager"), slog.String("session", sid.String()))
 	resp := make(chan leaseSenderResult, 1)
-	m.cmdCh <- leaseSenderCommand{sid: sid}
-
+	m.cmdCh <- leaseSenderCommand{sid: sid, resp: resp}
 	r := <-resp
-
-	slog.Default().Info("sender leased", slog.String("cmp", "manager"), slog.String("session", sid.String()))
-	return r.sendFunc, r.closeFunc, r.err
+	return r.sendFunc, r.releaseFunc, r.err
 }
 
-// ConfigureSession sets the next set of patterns for the session, starting and stopping streams as needed.
-// TODO: Replace 'next' parameter with a session configuration struct.
-func (m *Manager) ConfigureSession(id uuid.UUID, next []domain.Pattern) error {
-	slog.Default().Debug("configure session request", slog.String("cmp", "manager"), slog.String("session", id.String()), slog.Int("patterns", len(next)))
+// ConfigureSession applies a session config. Pattern wiring left TODO.
+func (m *Manager) ConfigureSession(sid uuid.UUID, cfg SessionConfig) error {
+	slog.Default().Debug("configure session request", slog.String("cmp", "manager"), slog.String("session", sid.String()))
 	resp := make(chan configureSessionResult, 1)
-	m.cmdCh <- configureSessionCommand{sid: id, next: next, resp: resp}
-
+	m.cmdCh <- configureSessionCommand{sid: sid, config: cfg, resp: resp}
 	r := <-resp
-
-	slog.Default().Info("session configured", slog.String("cmp", "manager"), slog.String("session", id.String()), slog.String("err", fmt.Sprintf("%v", r.err)))
 	return r.err
 }
 
-// CloseSession closes and removes the session, cleaning up all bindings.
-func (m *Manager) CloseSession(id uuid.UUID) error {
-	slog.Default().Debug("close session request", slog.String("cmp", "manager"), slog.String("session", id.String()))
+// CloseSession closes and removes the session.
+func (m *Manager) CloseSession(sid uuid.UUID) error {
+	slog.Default().Debug("close session request", slog.String("cmp", "manager"), slog.String("session", sid.String()))
 	resp := make(chan closeSessionResult, 1)
-	m.cmdCh <- closeSessionCommand{sid: id, resp: resp}
-
+	m.cmdCh <- closeSessionCommand{sid: sid, resp: resp}
 	r := <-resp
-
-	slog.Default().Info("session closed", slog.String("cmp", "manager"), slog.String("session", id.String()))
 	return r.err
 }
 
-func (m *Manager) NewWorker(workerType string) (uuid.UUID, error) {
-	return uuid.Nil, nil
-}
+// TODO: Implement worker methods
 
-func (m *Manager) ConfigureWorker(id uuid.UUID, config any) error {
-	return nil
-}
+func (m *Manager) NewWorker(string) (uuid.UUID, error)  { return uuid.Nil, nil }
+func (m *Manager) ConfigureWorker(uuid.UUID, any) error { return nil }
+func (m *Manager) TerminateWorker(uuid.UUID) error      { return nil }
 
-func (m *Manager) TerminateWorker(id uuid.UUID) error
+// --- Loop ---
 
-// The main loop of the manager, processing commands serially.
 func (m *Manager) run() {
-	for {
-		msg := <-m.cmdCh
+	for msg := range m.cmdCh {
 		switch c := msg.(type) {
 		case createSessionCommand:
 			m.handleNewSession(c)
 		case leaseReceiverCommand:
-			m.handleLeaseReceiever(c)
+			m.handleLeaseReceiver(c)
 		case leaseSenderCommand:
 			m.handleLeaseSender(c)
 		case configureSessionCommand:
@@ -141,69 +106,94 @@ func (m *Manager) run() {
 	}
 }
 
-// Command handlers, run in loop goroutine. With a single goroutine, no locking is needed.
+// --- Handlers ---
 
-// handleNewSession creates a new session with the given idle timeout. The idle timeout is typically not set by the client, but by the server configuration.
 func (m *Manager) handleNewSession(cmd createSessionCommand) {
-	s := newSession(time.Second*10, m.router.Incoming())
-
-	// Only arm the idle timer if the timeout is positive. We allow a zero or negative timeout to indicate "never timeout".
-	if s.idleAfter <= 0 {
-		s.armIdleTimer(func() {
-			resp := make(chan closeSessionResult, 1)
-			m.cmdCh <- closeSessionCommand{sid: s.id, resp: resp}
-			<-resp
-		})
+	var s *session
+	idleCb := func() {
+		resp := make(chan closeSessionResult, 1)
+		m.cmdCh <- closeSessionCommand{sid: s.id, resp: resp}
+		<-resp
 	}
-
+	s = newSession(m.router.Incoming(), idleCb)
 	m.sessions[s.id] = s
-
 	cmd.resp <- createSessionResult{sid: s.id}
 }
 
-func (m *Manager) handleLeaseReceiever(cmd leaseReceiverCommand) {
-	_, ok := m.sessions[cmd.sid]
+func (m *Manager) handleLeaseReceiver(cmd leaseReceiverCommand) {
+	s, ok := m.sessions[cmd.sid]
 	if !ok {
-		cmd.resp <- leaseReceiverResult{nil, nil, ErrSessionNotFound}
+		cmd.resp <- leaseReceiverResult{err: ErrSessionNotFound}
+		return
 	}
-
-	// TODO: Complete lease receiver
-}
-
-func (m *Manager) handleLeaseSender(cmd leaseSenderCommand) {
-	_, ok := m.sessions[cmd.sid]
-	if !ok {
-		cmd.resp <- leaseSenderResult{nil, nil, ErrSessionNotFound}
-	}
-
-	// TODO: Complete lease sender
-}
-
-// handleConfigure updates the session bindings, starting and stopping streams as needed. Currently only supports Raw streams.
-// TODO: Change this configuration to be an atomic operation, so that partial failures do not end in a half-configured state.
-func (m *Manager) handleConfigure(cmd configureSessionCommand) {
-	_, ok := m.sessions[cmd.sid]
-	if !ok {
-		cmd.resp <- configureSessionResult{ErrSessionNotFound}
+	recv, rel, err := s.leaseReceive()
+	if err != nil {
+		cmd.resp <- leaseReceiverResult{err: err}
 		return
 	}
 
-	var errs error
-	// TODO: IMPLEMENT!!!
+	// TODO: Attach routing based on s.cfg.Patterns to push into s.egress.
 
-	cmd.resp <- configureSessionResult{err: errs}
+	cmd.resp <- leaseReceiverResult{receiveFunc: recv, releaseFunc: rel, err: nil}
 }
 
-// handleCloseSession closes and removes the session, cleaning up all bindings.
+func (m *Manager) handleLeaseSender(cmd leaseSenderCommand) {
+	s, ok := m.sessions[cmd.sid]
+	if !ok {
+		cmd.resp <- leaseSenderResult{err: ErrSessionNotFound}
+		return
+	}
+	send, rel, err := s.leaseSend()
+	if err != nil {
+		cmd.resp <- leaseSenderResult{err: err}
+		return
+	}
+	cmd.resp <- leaseSenderResult{sendFunc: send, releaseFunc: rel, err: nil}
+}
+
+func (m *Manager) handleConfigure(cmd configureSessionCommand) {
+	s, ok := m.sessions[cmd.sid]
+	if !ok {
+		cmd.resp <- configureSessionResult{err: ErrSessionNotFound}
+		return
+	}
+
+	// Do not allow config changes while any lease is active.
+	if s.sendOpen || s.receiveOpen {
+		cmd.resp <- configureSessionResult{err: ErrConfigActiveLeases}
+		return
+	}
+
+	// Compute add/remove sets for s.cfg.Patterns vs cmd.config.Patterns.
+	// TODO: implement pattern diff and router bindings.
+
+	// Apply config now.
+	s.cfg = normalizeConfig(cmd.config)
+
+	// Reset idle timer using stored callback if no leases.
+	if !s.sendOpen && !s.receiveOpen {
+		s.disarmIdleTimer()
+		if s.cfg.IdleAfter > 0 {
+			s.armIdleTimer()
+		}
+	}
+
+	cmd.resp <- configureSessionResult{err: nil}
+}
+
 func (m *Manager) handleCloseSession(cmd closeSessionCommand) {
-	_, ok := m.sessions[cmd.sid]
+	s, ok := m.sessions[cmd.sid]
 	if !ok {
 		cmd.resp <- closeSessionResult{err: ErrSessionNotFound}
 		return
 	}
 
-	var errs error
-	// TODO: Implement!
+	// TODO: Detach any routing for s.cfg.Patterns.
 
-	cmd.resp <- closeSessionResult{err: errs}
+	// Release leases and disarm timer explicitly.
+	s.closeAll()
+	s.disarmIdleTimer()
+	delete(m.sessions, cmd.sid)
+
+	cmd.resp <- closeSessionResult{err: nil}
 }
