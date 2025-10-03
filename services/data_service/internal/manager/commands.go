@@ -54,3 +54,32 @@ type closeSessionCommand struct {
 type closeSessionResult struct {
 	err error
 }
+
+type spawnWorkerCommand struct {
+	workerType string
+	resp chan spawnWorkerResult
+}
+
+type spawnWorkerResult struct {
+	wid uuid.UUID
+	err error
+}
+
+type configureWorkerCommand struct {
+	wid uuid.UUID
+	configuration any
+	resp chan instructWorkerResponse
+}
+
+type configureWorkerResponse struct {
+	err error
+}
+
+type terminateWorkerCommand struct {
+	wid uuid.UUID
+	resp chan terminateWorkerResult
+}
+
+type terminateWorkerResult struct {
+	err error
+}
