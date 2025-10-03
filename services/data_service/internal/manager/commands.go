@@ -15,23 +15,23 @@ type createSessionResult struct {
 	sid uuid.UUID
 }
 
-type leaseReceiverCommand struct {
+type leaseSessionReceiverCommand struct {
 	sid  uuid.UUID
-	resp chan leaseReceiverResult
+	resp chan leaseSessionReceiverResult
 }
 
-type leaseReceiverResult struct {
+type leaseSessionReceiverResult struct {
 	receiveFunc func() (domain.Message, error)
 	releaseFunc func()
 	err         error
 }
 
-type leaseSenderCommand struct {
+type leaseSessionSenderCommand struct {
 	sid  uuid.UUID
-	resp chan leaseSenderResult
+	resp chan leaseSessionSenderResult
 }
 
-type leaseSenderResult struct {
+type leaseSessionSenderResult struct {
 	sendFunc    func(domain.Message) error
 	releaseFunc func()
 	err         error
@@ -39,7 +39,7 @@ type leaseSenderResult struct {
 
 type configureSessionCommand struct {
 	sid    uuid.UUID
-	config SessionConfig
+	config any
 	resp   chan configureSessionResult
 }
 

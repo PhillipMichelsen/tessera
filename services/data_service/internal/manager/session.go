@@ -73,8 +73,8 @@ func normalizeConfig(in SessionConfig) SessionConfig {
 	return out
 }
 
-// leaseSend opens a sender lease and returns (send, close, err).
-func (s *session) leaseSend() (func(domain.Message) error, func(), error) {
+// leaseSender opens a sender lease and returns (send, close, err).
+func (s *session) leaseSender() (func(domain.Message) error, func(), error) {
 	if s.sendOpen {
 		return nil, nil, ErrSenderAlreadyLeased
 	}
@@ -110,8 +110,8 @@ func (s *session) leaseSend() (func(domain.Message) error, func(), error) {
 	return sendFunc, releaseFunc, nil
 }
 
-// leaseReceive opens a receiver lease and returns (receive, close, err).
-func (s *session) leaseReceive() (func() (domain.Message, error), func(), error) {
+// leaseReceiver opens a receiver lease and returns (receive, close, err).
+func (s *session) leaseReceiver() (func() (domain.Message, error), func(), error) {
 	if s.receiveOpen {
 		return nil, nil, ErrReceiverAlreadyLeased
 	}

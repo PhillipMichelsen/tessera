@@ -45,26 +45,26 @@ func (m *Manager) CreateSession() uuid.UUID {
 	return r.sid
 }
 
-// LeaseReceiver leases a receiver and returns the receive func and its close func.
-func (m *Manager) LeaseReceiver(sid uuid.UUID) (func() (domain.Message, error), func(), error) {
-	slog.Default().Debug("lease receiver request", slog.String("cmp", "manager"), slog.String("session", sid.String()))
-	resp := make(chan leaseReceiverResult, 1)
-	m.cmdCh <- leaseReceiverCommand{sid: sid, resp: resp}
+// LeaseSessionReceiver leases a receiver and returns the receive func and its close func.
+func (m *Manager) LeaseSessionReceiver(sid uuid.UUID) (func() (domain.Message, error), func(), error) {
+	slog.Default().Debug("lease session receiver request", slog.String("cmp", "manager"), slog.String("session", sid.String()))
+	resp := make(chan leaseSessionReceiverResult, 1)
+	m.cmdCh <- leaseSessionReceiverCommand{sid: sid, resp: resp}
 	r := <-resp
 	return r.receiveFunc, r.releaseFunc, r.err
 }
 
-// LeaseSender leases a sender and returns the send func and its close func.
-func (m *Manager) LeaseSender(sid uuid.UUID) (func(domain.Message) error, func(), error) {
+// LeaseSessionSender leases a sender and returns the send func and its close func.
+func (m *Manager) LeaseSessionSender(sid uuid.UUID) (func(domain.Message) error, func(), error) {
 	slog.Default().Debug("lease sender request", slog.String("cmp", "manager"), slog.String("session", sid.String()))
-	resp := make(chan leaseSenderResult, 1)
-	m.cmdCh <- leaseSenderCommand{sid: sid, resp: resp}
+	resp := make(chan leaseSessionSenderResult, 1)
+	m.cmdCh <- leaseSessionSenderCommand{sid: sid, resp: resp}
 	r := <-resp
 	return r.sendFunc, r.releaseFunc, r.err
 }
 
 // ConfigureSession applies a session config. Pattern wiring left TODO.
-func (m *Manager) ConfigureSession(sid uuid.UUID, cfg SessionConfig) error {
+func (m *Manager) ConfigureSession(sid uuid.UUID, cfg any) error {
 	slog.Default().Debug("configure session request", slog.String("cmp", "manager"), slog.String("session", sid.String()))
 	resp := make(chan configureSessionResult, 1)
 	m.cmdCh <- configureSessionCommand{sid: sid, config: cfg, resp: resp}
@@ -105,12 +105,6 @@ func (m *Manager) TerminateWorker(wid uuid.UUID) error {
 	return r.err
 }
 
-// TODO: Implement worker methods
-
-func (m *Manager) NewWorker(string) (uuid.UUID, error)  { return uuid.Nil, nil }
-func (m *Manager) ConfigureWorker(uuid.UUID, any) error { return nil }
-func (m *Manager) TerminateWorker(uuid.UUID) error      { return nil }
-
 // --- Loop ---
 
 func (m *Manager) run() {
@@ -118,14 +112,20 @@ func (m *Manager) run() {
 		switch c := msg.(type) {
 		case createSessionCommand:
 			m.handleNewSession(c)
-		case leaseReceiverCommand:
-			m.handleLeaseReceiver(c)
-		case leaseSenderCommand:
-			m.handleLeaseSender(c)
+		case leaseSessionReceiverCommand:
+			m.handleLeaseSessionReceiver(c)
+		case leaseSessionSenderCommand:
+			m.handleLeaseSessionSender(c)
 		case configureSessionCommand:
-			m.handleConfigure(c)
+			m.handleConfigureSession(c)
 		case closeSessionCommand:
 			m.handleCloseSession(c)
+		case spawnWorkerCommand:
+			m.handleSpawnWorker(c)
+		case configureWorkerCommand:
+			m.handleConfigureWorker(c)
+		case terminateWorkerCommand:
+			m.handleTerminateWorker(c)
 		}
 	}
 }
@@ -144,38 +144,38 @@ func (m *Manager) handleNewSession(cmd createSessionCommand) {
 	cmd.resp <- createSessionResult{sid: s.id}
 }
 
-func (m *Manager) handleLeaseReceiver(cmd leaseReceiverCommand) {
+func (m *Manager) handleLeaseSessionReceiver(cmd leaseSessionReceiverCommand) {
 	s, ok := m.sessions[cmd.sid]
 	if !ok {
-		cmd.resp <- leaseReceiverResult{err: ErrSessionNotFound}
+		cmd.resp <- leaseSessionReceiverResult{err: ErrSessionNotFound}
 		return
 	}
-	recv, rel, err := s.leaseReceive()
+	recv, rel, err := s.leaseReceiver()
 	if err != nil {
-		cmd.resp <- leaseReceiverResult{err: err}
+		cmd.resp <- leaseSessionReceiverResult{err: err}
 		return
 	}
 
 	// TODO: Attach routing based on s.cfg.Patterns to push into s.egress.
 
-	cmd.resp <- leaseReceiverResult{receiveFunc: recv, releaseFunc: rel, err: nil}
+	cmd.resp <- leaseSessionReceiverResult{receiveFunc: recv, releaseFunc: rel, err: nil}
 }
 
-func (m *Manager) handleLeaseSender(cmd leaseSenderCommand) {
+func (m *Manager) handleLeaseSessionSender(cmd leaseSessionSenderCommand) {
 	s, ok := m.sessions[cmd.sid]
 	if !ok {
-		cmd.resp <- leaseSenderResult{err: ErrSessionNotFound}
+		cmd.resp <- leaseSessionSenderResult{err: ErrSessionNotFound}
 		return
 	}
-	send, rel, err := s.leaseSend()
+	send, rel, err := s.leaseSender()
 	if err != nil {
-		cmd.resp <- leaseSenderResult{err: err}
+		cmd.resp <- leaseSessionSenderResult{err: err}
 		return
 	}
-	cmd.resp <- leaseSenderResult{sendFunc: send, releaseFunc: rel, err: nil}
+	cmd.resp <- leaseSessionSenderResult{sendFunc: send, releaseFunc: rel, err: nil}
 }
 
-func (m *Manager) handleConfigure(cmd configureSessionCommand) {
+func (m *Manager) handleConfigureSession(cmd configureSessionCommand) {
 	s, ok := m.sessions[cmd.sid]
 	if !ok {
 		cmd.resp <- configureSessionResult{err: ErrSessionNotFound}
@@ -221,3 +221,7 @@ func (m *Manager) handleCloseSession(cmd closeSessionCommand) {
 
 	cmd.resp <- closeSessionResult{err: nil}
 }
+
+func (m *Manager) handleSpawnWorker(cmd spawnWorkerCommand) {}
+func (m *Manager) handleConfigureWorker(cmd configureWorkerCommand) {}
+func (m *Manager) handleTerminateWorker(cmd terminateWorkerCommand) {}

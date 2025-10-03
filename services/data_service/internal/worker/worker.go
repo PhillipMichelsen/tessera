@@ -24,10 +24,14 @@ type (
 
 type SessionController interface {
 	CreateSession(idleAfter time.Duration) uuid.UUID
-	LeaseSender(sid uuid.UUID) (SenderFunc, ReleaseFunc, error)
-	LeaseReceiver(sid uuid.UUID) (ReceiverFunc, ReleaseFunc, error)
-	ConfigureSession(sid uuid.UUID, next []domain.Identifier) error
+	LeaseSessionSender(sid uuid.UUID) (SenderFunc, ReleaseFunc, error)
+	LeaseSessionReceiver(sid uuid.UUID) (ReceiverFunc, ReleaseFunc, error)
+	ConfigureSession(sid uuid.UUID, cfg any) error
 	CloseSession(sid uuid.UUID) error
+
+	SpawnWorker(sid uuid.UUID, workerType string) uuid.UUID
+	ConfigureWorker(wid uuid.UUID, cfg any) error
+	TerminateWorker(wid uuid.UUID) error
 }
 
 type Instruction struct{}
