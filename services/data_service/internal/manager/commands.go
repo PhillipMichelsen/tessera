@@ -5,7 +5,8 @@ import (
 	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/domain"
 )
 
-// Commands posted into the manager loop. One struct per action.
+// Session Commands 
+
 type createSessionCommand struct {
 	resp chan createSessionResult
 }
@@ -54,6 +55,8 @@ type closeSessionCommand struct {
 type closeSessionResult struct {
 	err error
 }
+
+// Worker Commands
 
 type spawnWorkerCommand struct {
 	workerType string
