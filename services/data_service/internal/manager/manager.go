@@ -81,6 +81,30 @@ func (m *Manager) CloseSession(sid uuid.UUID) error {
 	return r.err
 }
 
+func (m *Manager) SpawnWorker(sid uuid.UUID, workerType string) (uuid.UUID, error) {
+	slog.Default().Debug("spawn worker request", slog.String("cmp", "manager"), slog.String("session", sid.String()), slog.String("workerType", workerType))
+	resp := make(chan spawnWorkerResult, 1)
+	m.cmdCh <- spawnWorkerCommand{sid: sid, workerType: workerType, resp: resp}
+	r := <-resp
+	return r.wid, r.err
+}
+
+func (m *Manager) ConfigureWorker(wid uuid.UUID,  cfg any) error {
+	slog.Default().Debug("configure worker request", slog.String("cmp", "manager"), slog.String("session", sid.String()), slog.String("worker", wid.String()))
+	resp := make(chan configureWorkerResponse, 1)
+	m.cmdCh <- configureWorkerCommand{wid: wid, config: cfg, resp: resp}
+	r := <-resp
+	return r.err
+}
+
+func (m *Manager) TerminateWorker(wid uuid.UUID) error {
+	slog.Default().Debug("terminate worker request", slog.String("cmp", "manager"), slog.String("session", sid.String()), slog.String("worker", wid.String()))
+	resp := make(chan terminateWorkerResult, 1)
+	m.cmdCh <- terminateWorkerCommand{wid: wid, resp: resp}
+	r := <-resp
+	return r.err
+}
+
 // TODO: Implement worker methods
 
 func (m *Manager) NewWorker(string) (uuid.UUID, error)  { return uuid.Nil, nil }

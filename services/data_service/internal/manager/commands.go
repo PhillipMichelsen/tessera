@@ -71,7 +71,7 @@ type spawnWorkerResult struct {
 
 type configureWorkerCommand struct {
 	wid uuid.UUID
-	configuration any
+	config any
 	resp chan instructWorkerResponse
 }
 
