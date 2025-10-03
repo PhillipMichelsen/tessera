@@ -56,9 +56,10 @@ type closeSessionResult struct {
 	err error
 }
 
-// Worker Commands
+// Worker Commands, though workers are bound to a session.
 
 type spawnWorkerCommand struct {
+	sid uuid.UUID
 	workerType string
 	resp chan spawnWorkerResult
 }
