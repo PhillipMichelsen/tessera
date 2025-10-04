@@ -31,7 +31,9 @@ type SessionController interface {
 
 	ConfigureSession(sid uuid.UUID, cfg any) error
 	CloseSession(sid uuid.UUID) error
+}
 
+type WorkerController interface {
 	SpawnWorker(sid uuid.UUID, workerType string) uuid.UUID
 	ConfigureWorker(wid uuid.UUID, cfg any) error
 	TerminateWorker(wid uuid.UUID) error
