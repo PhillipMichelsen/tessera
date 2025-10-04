@@ -14,8 +14,11 @@ var (
 	ErrAlreadyReleased       = errors.New("lease already released")
 	ErrSenderAlreadyLeased   = errors.New("sender already leased")
 	ErrReceiverAlreadyLeased = errors.New("receiver already leased")
+	ErrSenderNotLeased       = errors.New("no sender lease active")
+	ErrReceiverNotLeased     = errors.New("no receiver lease active")
 
-	// Config errors (enforced by manager).
+	// Config errors
+	ErrBadConfig          = errors.New("config not valid")
 	ErrConfigActiveLeases = errors.New("cannot configure while a lease is active")
 )
 
@@ -65,24 +68,42 @@ func newSession(ingress chan<- domain.Message, idleCb func()) *session {
 	return s
 }
 
-func normalizeConfig(in SessionConfig) SessionConfig {
-	out := in
-	if out.EgressBuffer <= 0 {
-		out.EgressBuffer = 256
+func (s *session) changeConfig(cfg any) error {
+	if s.sendOpen || s.receiveOpen {
+		return ErrConfigActiveLeases
 	}
-	return out
+
+	cfgParsed, ok := cfg.(SessionConfig)
+	if !ok {
+		return ErrBadConfig
+	}
+
+	s.cfg = cfgParsed
+
+	return nil
 }
 
-// leaseSender opens a sender lease and returns (send, close, err).
-func (s *session) leaseSender() (func(domain.Message) error, func(), error) {
+func (s *session) getEgress() (chan<- domain.Message, bool) {
+	if s.egress == nil {
+		return nil, false
+	}
+	return s.egress, true
+}
+
+func (s *session) getPatterns() []domain.Pattern {
+	return nil
+}
+
+// leaseSender opens a sender lease and returns send(m) error.
+func (s *session) leaseSender() (func(domain.Message) error, error) {
 	if s.sendOpen {
-		return nil, nil, ErrSenderAlreadyLeased
+		return nil, ErrSenderAlreadyLeased
 	}
 	s.sendOpen = true
 	s.sendDone = make(chan struct{})
 	s.disarmIdleTimer()
 
-	// Capture lease-scoped handle
+	// Snapshot for lease-scoped handle.
 	done := s.sendDone
 
 	sendFunc := func(m domain.Message) error {
@@ -94,33 +115,36 @@ func (s *session) leaseSender() (func(domain.Message) error, func(), error) {
 		}
 	}
 
-	releaseFunc := func() {
-		if !s.sendOpen || s.sendDone != done {
-			return
-		}
-		s.sendOpen = false
-		close(done)
-		s.sendDone = nil
-
-		if !s.sendOpen && !s.receiveOpen {
-			s.armIdleTimer()
-		}
-	}
-
-	return sendFunc, releaseFunc, nil
+	return sendFunc, nil
 }
 
-// leaseReceiver opens a receiver lease and returns (receive, close, err).
-func (s *session) leaseReceiver() (func() (domain.Message, error), func(), error) {
+// releaseSender releases the current sender lease.
+func (s *session) releaseSender() error {
+	if !s.sendOpen {
+		return ErrSenderNotLeased
+	}
+	s.sendOpen = false
+	if s.sendDone != nil {
+		close(s.sendDone) // invalidates all prior send funcs
+		s.sendDone = nil
+	}
+	if !s.receiveOpen {
+		s.armIdleTimer()
+	}
+	return nil
+}
+
+// leaseReceiver opens a receiver lease and returns receive() (Message, error).
+func (s *session) leaseReceiver() (func() (domain.Message, error), error) {
 	if s.receiveOpen {
-		return nil, nil, ErrReceiverAlreadyLeased
+		return nil, ErrReceiverAlreadyLeased
 	}
 	s.receiveOpen = true
 	s.receiveDone = make(chan struct{})
 	s.egress = make(chan domain.Message, s.cfg.EgressBuffer)
 	s.disarmIdleTimer()
 
-	// Capture lease-scoped handles
+	// Snapshots for lease-scoped handles.
 	done := s.receiveDone
 	eg := s.egress
 
@@ -136,26 +160,31 @@ func (s *session) leaseReceiver() (func() (domain.Message, error), func(), error
 		}
 	}
 
-	releaseFunc := func() {
-		if !s.receiveOpen || s.receiveDone != done || s.egress != eg {
-			return
-		}
-		s.receiveOpen = false
-		close(done)
-		close(eg)
-		s.receiveDone = nil
-		s.egress = nil
+	return receiveFunc, nil
+}
 
-		if !s.sendOpen && !s.receiveOpen {
-			s.armIdleTimer()
-		}
+// releaseReceiver releases the current receiver lease.
+// Manager must stop any routing into s.egress before calling this.
+func (s *session) releaseReceiver() error {
+	if !s.receiveOpen {
+		return ErrReceiverNotLeased
 	}
-
-	return receiveFunc, releaseFunc, nil
+	s.receiveOpen = false
+	if s.receiveDone != nil {
+		close(s.receiveDone) // invalidates all prior receive funcs
+		s.receiveDone = nil
+	}
+	if s.egress != nil {
+		close(s.egress)
+		s.egress = nil
+	}
+	if !s.sendOpen {
+		s.armIdleTimer()
+	}
+	return nil
 }
 
 // closeAll force-releases both sender and receiver leases. Safe to call multiple times.
-// Manager must stop any routing into s.egress before calling this. Or more generally, no more messages into s.egress before calling.
 func (s *session) closeAll() {
 	// Sender
 	if s.sendOpen {

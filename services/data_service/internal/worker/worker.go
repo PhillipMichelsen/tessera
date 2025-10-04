@@ -19,13 +19,16 @@ var (
 type (
 	ReceiverFunc func() (domain.Message, error)
 	SenderFunc   func(m domain.Message) error
-	ReleaseFunc  func()
 )
 
 type SessionController interface {
 	CreateSession(idleAfter time.Duration) uuid.UUID
-	LeaseSessionSender(sid uuid.UUID) (SenderFunc, ReleaseFunc, error)
-	LeaseSessionReceiver(sid uuid.UUID) (ReceiverFunc, ReleaseFunc, error)
+
+	LeaseSessionReceiver(sid uuid.UUID) (ReceiverFunc, error)
+	LeaseSessionSender(sid uuid.UUID) (SenderFunc, error)
+	ReleaseSessionReceiver(sid uuid.UUID) error
+	ReleaseSessionSender(sid uuid.UUID) error
+
 	ConfigureSession(sid uuid.UUID, cfg any) error
 	CloseSession(sid uuid.UUID) error
 

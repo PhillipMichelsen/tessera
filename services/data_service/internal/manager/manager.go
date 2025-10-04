@@ -46,21 +46,39 @@ func (m *Manager) CreateSession() uuid.UUID {
 }
 
 // LeaseSessionReceiver leases a receiver and returns the receive func and its close func.
-func (m *Manager) LeaseSessionReceiver(sid uuid.UUID) (func() (domain.Message, error), func(), error) {
+func (m *Manager) LeaseSessionReceiver(sid uuid.UUID) (func() (domain.Message, error), error) {
 	slog.Default().Debug("lease session receiver request", slog.String("cmp", "manager"), slog.String("session", sid.String()))
 	resp := make(chan leaseSessionReceiverResult, 1)
 	m.cmdCh <- leaseSessionReceiverCommand{sid: sid, resp: resp}
 	r := <-resp
-	return r.receiveFunc, r.releaseFunc, r.err
+	return r.receiveFunc, r.err
 }
 
 // LeaseSessionSender leases a sender and returns the send func and its close func.
-func (m *Manager) LeaseSessionSender(sid uuid.UUID) (func(domain.Message) error, func(), error) {
+func (m *Manager) LeaseSessionSender(sid uuid.UUID) (func(domain.Message) error, error) {
 	slog.Default().Debug("lease sender request", slog.String("cmp", "manager"), slog.String("session", sid.String()))
 	resp := make(chan leaseSessionSenderResult, 1)
 	m.cmdCh <- leaseSessionSenderCommand{sid: sid, resp: resp}
 	r := <-resp
-	return r.sendFunc, r.releaseFunc, r.err
+	return r.sendFunc, r.err
+}
+
+// ReleaseSessionReceiver releases the currently held receiver lease
+func (m *Manager) ReleaseSessionReceiver(sid uuid.UUID) error {
+	slog.Default().Debug("release session receiver request", slog.String("cmp", "manager"), slog.String("session", sid.String()))
+	resp := make(chan releaseSessionReceiverResult, 1)
+	m.cmdCh <- releaseSessionReceiverCommand{sid: sid, resp: resp}
+	r := <-resp
+	return r.err
+}
+
+// ReleaseSessionSender releases the currently held receiver lease
+func (m *Manager) ReleaseSessionSender(sid uuid.UUID) error {
+	slog.Default().Debug("release sender request", slog.String("cmp", "manager"), slog.String("session", sid.String()))
+	resp := make(chan releaseSessionSenderResult, 1)
+	m.cmdCh <- releaseSessionSenderCommand{sid: sid, resp: resp}
+	r := <-resp
+	return r.err
 }
 
 // ConfigureSession applies a session config. Pattern wiring left TODO.
@@ -89,8 +107,8 @@ func (m *Manager) SpawnWorker(sid uuid.UUID, workerType string) (uuid.UUID, erro
 	return r.wid, r.err
 }
 
-func (m *Manager) ConfigureWorker(wid uuid.UUID,  cfg any) error {
-	slog.Default().Debug("configure worker request", slog.String("cmp", "manager"), slog.String("session", sid.String()), slog.String("worker", wid.String()))
+func (m *Manager) ConfigureWorker(wid uuid.UUID, cfg any) error {
+	slog.Default().Debug("configure worker request", slog.String("cmp", "manager"), slog.String("worker", wid.String()))
 	resp := make(chan configureWorkerResponse, 1)
 	m.cmdCh <- configureWorkerCommand{wid: wid, config: cfg, resp: resp}
 	r := <-resp
@@ -98,7 +116,7 @@ func (m *Manager) ConfigureWorker(wid uuid.UUID,  cfg any) error {
 }
 
 func (m *Manager) TerminateWorker(wid uuid.UUID) error {
-	slog.Default().Debug("terminate worker request", slog.String("cmp", "manager"), slog.String("session", sid.String()), slog.String("worker", wid.String()))
+	slog.Default().Debug("terminate worker request", slog.String("cmp", "manager"), slog.String("worker", wid.String()))
 	resp := make(chan terminateWorkerResult, 1)
 	m.cmdCh <- terminateWorkerCommand{wid: wid, resp: resp}
 	r := <-resp
@@ -116,6 +134,10 @@ func (m *Manager) run() {
 			m.handleLeaseSessionReceiver(c)
 		case leaseSessionSenderCommand:
 			m.handleLeaseSessionSender(c)
+		case releaseSessionReceiverCommand:
+			m.handleReleaseSessionReceiver(c)
+		case releaseSessionSenderCommand:
+			m.handleReleaseSessionSender(c)
 		case configureSessionCommand:
 			m.handleConfigureSession(c)
 		case closeSessionCommand:
@@ -134,12 +156,12 @@ func (m *Manager) run() {
 
 func (m *Manager) handleNewSession(cmd createSessionCommand) {
 	var s *session
-	idleCb := func() {
+	idleCallback := func() { // Generate callback function for the session to be created.
 		resp := make(chan closeSessionResult, 1)
 		m.cmdCh <- closeSessionCommand{sid: s.id, resp: resp}
 		<-resp
 	}
-	s = newSession(m.router.Incoming(), idleCb)
+	s = newSession(m.router.Incoming(), idleCallback)
 	m.sessions[s.id] = s
 	cmd.resp <- createSessionResult{sid: s.id}
 }
@@ -150,15 +172,24 @@ func (m *Manager) handleLeaseSessionReceiver(cmd leaseSessionReceiverCommand) {
 		cmd.resp <- leaseSessionReceiverResult{err: ErrSessionNotFound}
 		return
 	}
-	recv, rel, err := s.leaseReceiver()
+	recv, err := s.leaseReceiver()
 	if err != nil {
 		cmd.resp <- leaseSessionReceiverResult{err: err}
 		return
 	}
 
-	// TODO: Attach routing based on s.cfg.Patterns to push into s.egress.
+	// Register the patterns and egress channel for the session with the router.
+	patterns := s.getPatterns()
+	egressChan, ok := s.getEgress()
+	if !ok {
+		cmd.resp <- leaseSessionReceiverResult{err: errors.New("egress channel doesn't exist despite successful lease")}
+	}
 
-	cmd.resp <- leaseSessionReceiverResult{receiveFunc: recv, releaseFunc: rel, err: nil}
+	for _, pattern := range patterns {
+		m.router.RegisterPattern(pattern, egressChan)
+	}
+
+	cmd.resp <- leaseSessionReceiverResult{receiveFunc: recv, err: nil}
 }
 
 func (m *Manager) handleLeaseSessionSender(cmd leaseSessionSenderCommand) {
@@ -167,12 +198,40 @@ func (m *Manager) handleLeaseSessionSender(cmd leaseSessionSenderCommand) {
 		cmd.resp <- leaseSessionSenderResult{err: ErrSessionNotFound}
 		return
 	}
-	send, rel, err := s.leaseSender()
+	send, err := s.leaseSender()
 	if err != nil {
 		cmd.resp <- leaseSessionSenderResult{err: err}
 		return
 	}
-	cmd.resp <- leaseSessionSenderResult{sendFunc: send, releaseFunc: rel, err: nil}
+	cmd.resp <- leaseSessionSenderResult{sendFunc: send, err: nil}
+}
+
+func (m *Manager) handleReleaseSessionReceiver(cmd releaseSessionReceiverCommand) {
+	s, ok := m.sessions[cmd.sid]
+	if !ok {
+		cmd.resp <- releaseSessionReceiverResult{err: ErrSessionNotFound}
+		return
+	}
+	err := s.releaseReceiver()
+	if err != nil {
+		cmd.resp <- releaseSessionReceiverResult{err: err}
+		return
+	}
+	cmd.resp <- releaseSessionReceiverResult{err: nil}
+}
+
+func (m *Manager) handleReleaseSessionSender(cmd releaseSessionSenderCommand) {
+	s, ok := m.sessions[cmd.sid]
+	if !ok {
+		cmd.resp <- releaseSessionSenderResult{err: ErrSessionNotFound}
+		return
+	}
+	err := s.releaseSender()
+	if err != nil {
+		cmd.resp <- releaseSessionSenderResult{err: err}
+		return
+	}
+	cmd.resp <- releaseSessionSenderResult{err: nil}
 }
 
 func (m *Manager) handleConfigureSession(cmd configureSessionCommand) {
@@ -182,24 +241,10 @@ func (m *Manager) handleConfigureSession(cmd configureSessionCommand) {
 		return
 	}
 
-	// Do not allow config changes while any lease is active.
-	if s.sendOpen || s.receiveOpen {
-		cmd.resp <- configureSessionResult{err: ErrConfigActiveLeases}
+	err := s.changeConfig(cmd.config)
+	if err != nil {
+		cmd.resp <- configureSessionResult{err: err}
 		return
-	}
-
-	// Compute add/remove sets for s.cfg.Patterns vs cmd.config.Patterns.
-	// TODO: implement pattern diff and router bindings.
-
-	// Apply config now.
-	s.cfg = normalizeConfig(cmd.config)
-
-	// Reset idle timer using stored callback if no leases.
-	if !s.sendOpen && !s.receiveOpen {
-		s.disarmIdleTimer()
-		if s.cfg.IdleAfter > 0 {
-			s.armIdleTimer()
-		}
 	}
 
 	cmd.resp <- configureSessionResult{err: nil}
@@ -212,9 +257,15 @@ func (m *Manager) handleCloseSession(cmd closeSessionCommand) {
 		return
 	}
 
-	// TODO: Detach any routing for s.cfg.Patterns.
+	patterns := s.getPatterns()
+	egress, ok := s.getEgress()
+	if ok { // We only need to deregister if there is an active receiver lease.
+		for _, pattern := range patterns {
+			m.router.DeregisterPattern(pattern, egress)
+		}
+	}
 
-	// Release leases and disarm timer explicitly.
+	// Release leases and ensure idle timer is disarmed.
 	s.closeAll()
 	s.disarmIdleTimer()
 	delete(m.sessions, cmd.sid)
@@ -222,6 +273,7 @@ func (m *Manager) handleCloseSession(cmd closeSessionCommand) {
 	cmd.resp <- closeSessionResult{err: nil}
 }
 
-func (m *Manager) handleSpawnWorker(cmd spawnWorkerCommand) {}
+func (m *Manager) handleSpawnWorker(cmd spawnWorkerCommand)         {}
 func (m *Manager) handleConfigureWorker(cmd configureWorkerCommand) {}
 func (m *Manager) handleTerminateWorker(cmd terminateWorkerCommand) {}
+

@@ -5,7 +5,7 @@ import (
 	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/domain"
 )
 
-// Session Commands 
+// Session Commands
 
 type createSessionCommand struct {
 	resp chan createSessionResult
@@ -22,7 +22,6 @@ type leaseSessionReceiverCommand struct {
 
 type leaseSessionReceiverResult struct {
 	receiveFunc func() (domain.Message, error)
-	releaseFunc func()
 	err         error
 }
 
@@ -32,9 +31,26 @@ type leaseSessionSenderCommand struct {
 }
 
 type leaseSessionSenderResult struct {
-	sendFunc    func(domain.Message) error
-	releaseFunc func()
-	err         error
+	sendFunc func(domain.Message) error
+	err      error
+}
+
+type releaseSessionReceiverCommand struct {
+	sid  uuid.UUID
+	resp chan releaseSessionReceiverResult
+}
+
+type releaseSessionReceiverResult struct {
+	err error
+}
+
+type releaseSessionSenderCommand struct {
+	sid  uuid.UUID
+	resp chan releaseSessionSenderResult
+}
+
+type releaseSessionSenderResult struct {
+	err error
 }
 
 type configureSessionCommand struct {
@@ -59,9 +75,9 @@ type closeSessionResult struct {
 // Worker Commands, though workers are bound to a session.
 
 type spawnWorkerCommand struct {
-	sid uuid.UUID
+	sid        uuid.UUID
 	workerType string
-	resp chan spawnWorkerResult
+	resp       chan spawnWorkerResult
 }
 
 type spawnWorkerResult struct {
@@ -70,9 +86,9 @@ type spawnWorkerResult struct {
 }
 
 type configureWorkerCommand struct {
-	wid uuid.UUID
+	wid    uuid.UUID
 	config any
-	resp chan instructWorkerResponse
+	resp   chan configureWorkerResponse
 }
 
 type configureWorkerResponse struct {
@@ -80,7 +96,7 @@ type configureWorkerResponse struct {
 }
 
 type terminateWorkerCommand struct {
-	wid uuid.UUID
+	wid  uuid.UUID
 	resp chan terminateWorkerResult
 }
 
