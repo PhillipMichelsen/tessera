@@ -99,30 +99,6 @@ func (m *Manager) CloseSession(sid uuid.UUID) error {
 	return r.err
 }
 
-func (m *Manager) SpawnWorker(sid uuid.UUID, workerType string) (uuid.UUID, error) {
-	slog.Default().Debug("spawn worker request", slog.String("cmp", "manager"), slog.String("session", sid.String()), slog.String("workerType", workerType))
-	resp := make(chan spawnWorkerResult, 1)
-	m.cmdCh <- spawnWorkerCommand{sid: sid, workerType: workerType, resp: resp}
-	r := <-resp
-	return r.wid, r.err
-}
-
-func (m *Manager) ConfigureWorker(wid uuid.UUID, cfg any) error {
-	slog.Default().Debug("configure worker request", slog.String("cmp", "manager"), slog.String("worker", wid.String()))
-	resp := make(chan configureWorkerResponse, 1)
-	m.cmdCh <- configureWorkerCommand{wid: wid, config: cfg, resp: resp}
-	r := <-resp
-	return r.err
-}
-
-func (m *Manager) TerminateWorker(wid uuid.UUID) error {
-	slog.Default().Debug("terminate worker request", slog.String("cmp", "manager"), slog.String("worker", wid.String()))
-	resp := make(chan terminateWorkerResult, 1)
-	m.cmdCh <- terminateWorkerCommand{wid: wid, resp: resp}
-	r := <-resp
-	return r.err
-}
-
 // --- Loop ---
 
 func (m *Manager) run() {
@@ -142,12 +118,6 @@ func (m *Manager) run() {
 			m.handleConfigureSession(c)
 		case closeSessionCommand:
 			m.handleCloseSession(c)
-		case spawnWorkerCommand:
-			m.handleSpawnWorker(c)
-		case configureWorkerCommand:
-			m.handleConfigureWorker(c)
-		case terminateWorkerCommand:
-			m.handleTerminateWorker(c)
 		}
 	}
 }
@@ -272,8 +242,3 @@ func (m *Manager) handleCloseSession(cmd closeSessionCommand) {
 
 	cmd.resp <- closeSessionResult{err: nil}
 }
-
-func (m *Manager) handleSpawnWorker(cmd spawnWorkerCommand)         {}
-func (m *Manager) handleConfigureWorker(cmd configureWorkerCommand) {}
-func (m *Manager) handleTerminateWorker(cmd terminateWorkerCommand) {}
-
