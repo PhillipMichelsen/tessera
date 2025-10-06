@@ -22,12 +22,19 @@ var (
 	ErrConfigActiveLeases = errors.New("cannot configure while a lease is active")
 )
 
+type WorkerEntry struct {
+	Type  string
+	Spec  []byte
+	Units []byte
+}
+
 // SessionConfig carries non-live-tunable knobs for a session.
 // Manager mutates this directly; session does not expose Configure anymore.
 type SessionConfig struct {
 	IdleAfter    time.Duration // <=0 disables idle timer
 	EgressBuffer int           // receiver egress buffer size
 	Patterns     []domain.Pattern
+	Workers      []WorkerEntry
 }
 
 // session is manager-owned state. Single goroutine access.
@@ -68,7 +75,7 @@ func newSession(ingress chan<- domain.Message, idleCb func()) *session {
 	return s
 }
 
-func (s *session) changeConfig(cfg any) error {
+func (s *session) setConfig(cfg any) error {
 	if s.sendOpen || s.receiveOpen {
 		return ErrConfigActiveLeases
 	}

@@ -3,7 +3,6 @@
 package worker
 
 import (
-	"context"
 	"errors"
 	"time"
 
@@ -33,20 +32,20 @@ type SessionController interface {
 	CloseSession(sid uuid.UUID) error
 }
 
-type WorkerController interface {
-	SpawnWorker(sid uuid.UUID, workerType string) uuid.UUID
-	ConfigureWorker(wid uuid.UUID, cfg any) error
-	TerminateWorker(wid uuid.UUID) error
+type Worker interface {
+	Start(spec []byte, ctrl SessionController) error
+	Stop() error
+	IsRunning() bool
+
+	SetUnits(units [][]byte) error
+
+	GetSpecification() []byte
+	GetUnits() [][]byte
 }
 
-type Instruction struct{}
+type Factory func() Worker
 
-type Worker interface {
-	Start(wid uuid.UUID, controller SessionController, cfg []byte) error
-	Stop() error
-
-	Execute(ctx context.Context, inst Instruction) error
-
-	IsRunning() bool
-	ID() uuid.UUID
+type Keyer interface {
+	ComputeSpecificationKey(spec []byte) (string, error)
+	ComputeUnitKey(unit []byte) (string, error)
 }

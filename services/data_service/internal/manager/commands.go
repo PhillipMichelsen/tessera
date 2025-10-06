@@ -54,9 +54,9 @@ type releaseSessionSenderResult struct {
 }
 
 type configureSessionCommand struct {
-	sid    uuid.UUID
-	config any
-	resp   chan configureSessionResult
+	sid  uuid.UUID
+	cfg  any
+	resp chan configureSessionResult
 }
 
 type configureSessionResult struct {

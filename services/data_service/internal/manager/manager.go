@@ -18,10 +18,13 @@ type Manager struct {
 	cmdCh    chan any
 	sessions map[uuid.UUID]*session
 	router   *router.Router
+
+	workerRegistry  *WorkerRegistry
+	workerInstances map[string]map[string]worker.Worker
 }
 
 // NewManager creates a manager and starts its run loop.
-func NewManager(r *router.Router, _ *worker.Registry) *Manager {
+func NewManager(r *router.Router, _ *WorkerRegistry) *Manager {
 	m := &Manager{
 		cmdCh:    make(chan any, 256),
 		sessions: make(map[uuid.UUID]*session),
@@ -85,7 +88,7 @@ func (m *Manager) ReleaseSessionSender(sid uuid.UUID) error {
 func (m *Manager) ConfigureSession(sid uuid.UUID, cfg any) error {
 	slog.Default().Debug("configure session request", slog.String("cmp", "manager"), slog.String("session", sid.String()))
 	resp := make(chan configureSessionResult, 1)
-	m.cmdCh <- configureSessionCommand{sid: sid, config: cfg, resp: resp}
+	m.cmdCh <- configureSessionCommand{sid: sid, cfg: cfg, resp: resp}
 	r := <-resp
 	return r.err
 }
@@ -211,7 +214,9 @@ func (m *Manager) handleConfigureSession(cmd configureSessionCommand) {
 		return
 	}
 
-	err := s.changeConfig(cmd.config)
+	// TODO: IMPLEMENT! Very heavy, add helper methods if needed.
+
+	err := s.setConfig(cmd.cfg)
 	if err != nil {
 		cmd.resp <- configureSessionResult{err: err}
 		return
@@ -226,6 +231,8 @@ func (m *Manager) handleCloseSession(cmd closeSessionCommand) {
 		cmd.resp <- closeSessionResult{err: ErrSessionNotFound}
 		return
 	}
+
+	// TODO: Ensure workers are correctly scrapped
 
 	patterns := s.getPatterns()
 	egress, ok := s.getEgress()
