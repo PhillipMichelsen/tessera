@@ -1,74 +1,69 @@
 package manager
 
 import (
-	"time"
-
 	"github.com/google/uuid"
 	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/domain"
-	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/provider"
 )
 
-// Commands posted into the manager loop. One struct per action.
-type addProviderCmd struct {
-	name string
-	p    provider.Provider
-	resp chan addProviderResult
+// Session Commands
+
+type createSessionCommand struct {
+	resp chan createSessionResult
 }
 
-type addProviderResult struct {
-	err error
+type createSessionResult struct {
+	sid uuid.UUID
 }
 
-type removeProviderCmd struct {
-	name string
-	resp chan removeProviderResult
-}
-
-type removeProviderResult struct {
-	err error
-}
-
-type newSessionCmd struct {
-	idleAfter time.Duration
-	resp      chan newSessionResult
-}
-
-type newSessionResult struct {
-	id uuid.UUID
-}
-
-type attachCmd struct {
-	sid           uuid.UUID
-	inBuf, outBuf int
-	resp          chan attachResult
-}
-
-type attachResult struct {
-	cin  chan<- domain.Message
-	cout <-chan domain.Message
-	err  error
-}
-
-type detachCmd struct {
+type leaseSessionReceiverCommand struct {
 	sid  uuid.UUID
-	resp chan detachResult
+	resp chan leaseSessionReceiverResult
 }
 
-type detachResult struct {
-	err error
+type leaseSessionReceiverResult struct {
+	receiveFunc func() (domain.Message, error)
+	err         error
 }
 
-type configureCmd struct {
+type leaseSessionSenderCommand struct {
 	sid  uuid.UUID
-	next []domain.Pattern
-	resp chan configureResult
+	resp chan leaseSessionSenderResult
 }
 
-type configureResult struct {
+type leaseSessionSenderResult struct {
+	sendFunc func(domain.Message) error
+	err      error
+}
+
+type releaseSessionReceiverCommand struct {
+	sid  uuid.UUID
+	resp chan releaseSessionReceiverResult
+}
+
+type releaseSessionReceiverResult struct {
 	err error
 }
 
-type closeSessionCmd struct {
+type releaseSessionSenderCommand struct {
+	sid  uuid.UUID
+	resp chan releaseSessionSenderResult
+}
+
+type releaseSessionSenderResult struct {
+	err error
+}
+
+type configureSessionCommand struct {
+	sid  uuid.UUID
+	cfg  any
+	resp chan configureSessionResult
+}
+
+type configureSessionResult struct {
+	err error
+}
+
+type closeSessionCommand struct {
 	sid  uuid.UUID
 	resp chan closeSessionResult
 }

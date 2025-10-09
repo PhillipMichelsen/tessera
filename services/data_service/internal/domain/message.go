@@ -1,3 +1,4 @@
+// Package domain contains all key domain types
 package domain
 
 type Message struct {
