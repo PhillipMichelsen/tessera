@@ -19,8 +19,9 @@ type Manager struct {
 	sessions map[uuid.UUID]*session
 	router   *router.Router
 
-	workerRegistry  *WorkerRegistry
-	workerInstances map[string]map[string]worker.Worker
+	workerRegistry      *WorkerRegistry
+	workerInstances     map[string]map[string]worker.Worker
+	workerUnitRefCounts map[string]map[string]map[string]int
 }
 
 // NewManager creates a manager and starts its run loop.
@@ -214,11 +215,259 @@ func (m *Manager) handleConfigureSession(cmd configureSessionCommand) {
 		return
 	}
 
-	// TODO: IMPLEMENT! Very heavy, add helper methods if needed.
+	newCfg, ok := cmd.cfg.(SessionConfig)
+	if !ok {
+		cmd.resp <- configureSessionResult{err: ErrBadConfig}
+		return
+	}
 
-	err := s.setConfig(cmd.cfg)
-	if err != nil {
+	// Normalize workers.
+	normalized := make([]WorkerEntry, len(newCfg.Workers))
+	for i, we := range newCfg.Workers {
+		spec, err := m.workerRegistry.NormalizeSpecificationBytes(we.Type, we.Spec)
+		if err != nil {
+			cmd.resp <- configureSessionResult{err: err}
+			return
+		}
+		unit, err := m.workerRegistry.NormalizeUnitBytes(we.Type, we.Unit)
+		if err != nil {
+			cmd.resp <- configureSessionResult{err: err}
+			return
+		}
+		normalized[i] = WorkerEntry{Type: we.Type, Spec: spec, Unit: unit}
+	}
+	newCfg.Workers = normalized
+
+	// Compute diffs.
+	curr := append([]WorkerEntry(nil), s.cfg.Workers...)
+	next := append([]WorkerEntry(nil), newCfg.Workers...)
+	additions, removals := workerEntryDiffs(curr, next)
+
+	// Per-instance delta: type -> spec -> {add, remove}
+	type delta struct{ add, remove [][]byte }
+	changes := make(map[string]map[string]delta)
+	addTo := func(typ, spec string, u []byte, isAdd bool) {
+		if changes[typ] == nil {
+			changes[typ] = make(map[string]delta)
+		}
+		d := changes[typ][spec]
+		if isAdd {
+			d.add = append(d.add, u)
+		} else {
+			d.remove = append(d.remove, u)
+		}
+		changes[typ][spec] = d
+	}
+	for _, e := range additions {
+		addTo(e.Type, string(e.Spec), e.Unit, true)
+	}
+	for _, e := range removals {
+		addTo(e.Type, string(e.Spec), e.Unit, false)
+	}
+
+	// Ensure manager maps.
+	if m.workerInstances == nil {
+		m.workerInstances = make(map[string]map[string]worker.Worker)
+	}
+	if m.workerUnitRefCounts == nil {
+		m.workerUnitRefCounts = make(map[string]map[string]map[string]int)
+	}
+
+	// Rollback snapshots.
+	type snap struct {
+		hadInst bool
+		prevRef map[string]int
+	}
+	snaps := make(map[string]map[string]snap) // type -> spec -> snap
+	created := make(map[string]map[string]bool)
+
+	saveSnap := func(typ, spec string) {
+		if snaps[typ] == nil {
+			snaps[typ] = make(map[string]snap)
+		}
+		if _, ok := snaps[typ][spec]; ok {
+			return
+		}
+		had := false
+		if m.workerInstances[typ] != nil {
+			_, had = m.workerInstances[typ][spec]
+		}
+		prev := make(map[string]int)
+		if m.workerUnitRefCounts[typ] != nil && m.workerUnitRefCounts[typ][spec] != nil {
+			for k, v := range m.workerUnitRefCounts[typ][spec] {
+				prev[k] = v
+			}
+		}
+		snaps[typ][spec] = snap{hadInst: had, prevRef: prev}
+	}
+	markCreated := func(typ, spec string) {
+		if created[typ] == nil {
+			created[typ] = make(map[string]bool)
+		}
+		created[typ][spec] = true
+	}
+
+	toBytesSlice := func(ref map[string]int) [][]byte {
+		out := make([][]byte, 0, len(ref))
+		for k, c := range ref {
+			if c > 0 {
+				out = append(out, []byte(k))
+			}
+		}
+		return out
+	}
+
+	restore := func(err error) {
+		// Restore refcounts and instance unit sets.
+		for typ, specs := range snaps {
+			for spec, sn := range specs {
+				// Restore refcounts exactly.
+				if m.workerUnitRefCounts[typ] == nil {
+					m.workerUnitRefCounts[typ] = make(map[string]map[string]int)
+				}
+				rc := make(map[string]int)
+				for k, v := range sn.prevRef {
+					rc[k] = v
+				}
+				m.workerUnitRefCounts[typ][spec] = rc
+
+				prevUnits := toBytesSlice(rc)
+
+				inst := m.workerInstances[typ][spec]
+				switch {
+				case sn.hadInst:
+					// Ensure instance exists and set units back.
+					if inst == nil {
+						wi, ierr := m.workerRegistry.Spawn(typ)
+						if ierr == nil {
+							m.workerInstances[typ][spec] = wi
+							inst = wi
+							// TODO: pass the correct SessionController
+							_ = wi.Start([]byte(spec), s) // best-effort
+						}
+					}
+					if inst != nil {
+						_ = inst.SetUnits(prevUnits) // best-effort
+					}
+				default:
+					// We did not have an instance before. Stop and remove if present.
+					if inst != nil {
+						_ = inst.Stop()
+						delete(m.workerInstances[typ], spec)
+						if len(m.workerInstances[typ]) == 0 {
+							delete(m.workerInstances, typ)
+						}
+					}
+					// If no refs remain, clean refcounts map too.
+					if len(rc) == 0 {
+						delete(m.workerUnitRefCounts[typ], spec)
+						if len(m.workerUnitRefCounts[typ]) == 0 {
+							delete(m.workerUnitRefCounts, typ)
+						}
+					}
+				}
+			}
+		}
+		// Clean up instances created during this op that shouldn't exist.
+		for typ, specs := range created {
+			for spec := range specs {
+				if snaps[typ] != nil && snaps[typ][spec].hadInst {
+					continue
+				}
+				if inst := m.workerInstances[typ][spec]; inst != nil {
+					_ = inst.Stop()
+					delete(m.workerInstances[typ], spec)
+					if len(m.workerInstances[typ]) == 0 {
+						delete(m.workerInstances, typ)
+					}
+				}
+			}
+		}
 		cmd.resp <- configureSessionResult{err: err}
+	}
+
+	// Apply deltas per instance.
+	for typ, specMap := range changes {
+		if m.workerUnitRefCounts[typ] == nil {
+			m.workerUnitRefCounts[typ] = make(map[string]map[string]int)
+		}
+		if m.workerInstances[typ] == nil {
+			m.workerInstances[typ] = make(map[string]worker.Worker)
+		}
+
+		for spec, d := range specMap {
+			saveSnap(typ, spec)
+
+			// Update refcounts.
+			rc := m.workerUnitRefCounts[typ][spec]
+			if rc == nil {
+				rc = make(map[string]int)
+				m.workerUnitRefCounts[typ][spec] = rc
+			}
+			for _, u := range d.remove {
+				k := string(u)
+				if rc[k] > 0 {
+					rc[k]--
+				}
+				if rc[k] == 0 {
+					delete(rc, k)
+				}
+			}
+			for _, u := range d.add {
+				k := string(u)
+				rc[k]++
+			}
+
+			desired := toBytesSlice(rc)
+			inst := m.workerInstances[typ][spec]
+
+			switch {
+			case len(desired) == 0:
+				// No units desired: stop and prune if instance exists.
+				if inst != nil {
+					if err := inst.Stop(); err != nil {
+						restore(err)
+						return
+					}
+					delete(m.workerInstances[typ], spec)
+					if len(m.workerInstances[typ]) == 0 {
+						delete(m.workerInstances, typ)
+					}
+				}
+				// If no refs left, prune refcounts too.
+				delete(m.workerUnitRefCounts[typ], spec)
+				if len(m.workerUnitRefCounts[typ]) == 0 {
+					delete(m.workerUnitRefCounts, typ)
+				}
+
+			default:
+				// Need instance with desired units.
+				if inst == nil {
+					wi, err := m.workerRegistry.Instantiate(typ, []byte(spec))
+					if err != nil {
+						restore(err)
+						return
+					}
+					m.workerInstances[typ][spec] = wi
+					markCreated(typ, spec)
+					// TODO: pass correct SessionController implementation
+					if err := wi.Start([]byte(spec), s); err != nil {
+						restore(err)
+						return
+					}
+					inst = wi
+				}
+				if err := inst.SetUnits(desired); err != nil {
+					restore(err)
+					return
+				}
+			}
+		}
+	}
+
+	// Commit config last.
+	if err := s.setConfig(newCfg); err != nil {
+		restore(err)
 		return
 	}
 

@@ -23,9 +23,9 @@ var (
 )
 
 type WorkerEntry struct {
-	Type  string
-	Spec  []byte
-	Units []byte
+	Type string
+	Spec []byte
+	Unit []byte
 }
 
 // SessionConfig carries non-live-tunable knobs for a session.

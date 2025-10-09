@@ -8,15 +8,15 @@ import (
 )
 
 var (
-	ErrWorkerTypeExists  = errors.New("worker type already registered")
-	ErrWorkerTypeUnknown = errors.New("unknown worker type")
-	ErrNilFactory        = errors.New("nil worker factory")
-	ErrNilKeyer          = errors.New("nil worker keyer")
+	ErrWorkerAlreadyRegistered = errors.New("worker type already registered")
+	ErrWorkerTypeUnknown       = errors.New("unknown worker type")
+	ErrNilFactory              = errors.New("nil worker factory")
+	ErrNilNormalizer           = errors.New("nil worker normalizer")
 )
 
 type registryEntry struct {
-	f worker.Factory
-	k worker.Keyer
+	factory    worker.Factory
+	normalizer worker.Normalizer
 }
 
 type WorkerRegistry struct {
@@ -29,19 +29,19 @@ func NewWorkerRegistry() *WorkerRegistry {
 }
 
 // Register a worker type with its factory and keyer.
-func (wr *WorkerRegistry) Register(workerType string, f worker.Factory, k worker.Keyer) error {
-	if f == nil {
+func (wr *WorkerRegistry) Register(workerType string, factory worker.Factory, normalizer worker.Normalizer) error {
+	if factory == nil {
 		return ErrNilFactory
 	}
-	if k == nil {
-		return ErrNilKeyer
+	if normalizer == nil {
+		return ErrNilNormalizer
 	}
 	wr.mu.Lock()
 	defer wr.mu.Unlock()
 	if _, ok := wr.m[workerType]; ok {
-		return ErrWorkerTypeExists
+		return ErrWorkerAlreadyRegistered
 	}
-	wr.m[workerType] = registryEntry{f: f, k: k}
+	wr.m[workerType] = registryEntry{factory: factory, normalizer: normalizer}
 	return nil
 }
 
@@ -64,29 +64,27 @@ func (wr *WorkerRegistry) Spawn(workerType string) (worker.Worker, error) {
 	if !ok {
 		return nil, ErrWorkerTypeUnknown
 	}
-	return entry.f(), nil
+	return entry.factory(), nil
 }
 
-// GetSpecificationKey computes the stable specification key using the type's keyer.
-func (wr *WorkerRegistry) GetSpecificationKey(workerType string, spec []byte) (string, error) {
+func (wr *WorkerRegistry) NormalizeSpecificationBytes(workerType string, spec []byte) ([]byte, error) {
 	wr.mu.RLock()
 	entry, ok := wr.m[workerType]
 	wr.mu.RUnlock()
 	if !ok {
-		return "", ErrWorkerTypeUnknown
+		return nil, ErrWorkerTypeUnknown
 	}
-	return entry.k.ComputeSpecificationKey(spec)
+	return entry.normalizer.NormalizeSpecification(spec)
 }
 
-// GetUnitKey derives the stable unit key using the type's keyer.
-func (wr *WorkerRegistry) GetUnitKey(workerType string, unit []byte) (string, error) {
+func (wr *WorkerRegistry) NormalizeUnitBytes(workerType string, unit []byte) ([]byte, error) {
 	wr.mu.RLock()
 	entry, ok := wr.m[workerType]
 	wr.mu.RUnlock()
 	if !ok {
-		return "", ErrWorkerTypeUnknown
+		return nil, ErrWorkerTypeUnknown
 	}
-	return entry.k.ComputeUnitKey(unit)
+	return entry.normalizer.NormalizeUnit(unit)
 }
 
 // Factory returns the registered factory.
@@ -97,18 +95,17 @@ func (wr *WorkerRegistry) Factory(workerType string) (worker.Factory, error) {
 	if !ok {
 		return nil, ErrWorkerTypeUnknown
 	}
-	return entry.f, nil
+	return entry.factory, nil
 }
 
-// Keyer returns the registered keyer.
-func (wr *WorkerRegistry) Keyer(workerType string) (worker.Keyer, error) {
+func (wr *WorkerRegistry) Normalizer(workerType string) (worker.Normalizer, error) {
 	wr.mu.RLock()
 	entry, ok := wr.m[workerType]
 	wr.mu.RUnlock()
 	if !ok {
 		return nil, ErrWorkerTypeUnknown
 	}
-	return entry.k, nil
+	return entry.normalizer, nil
 }
 
 // RegisteredTypes lists all worker types.

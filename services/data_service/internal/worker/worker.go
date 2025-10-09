@@ -43,9 +43,9 @@ type Worker interface {
 	GetUnits() [][]byte
 }
 
-type Factory func() Worker
-
-type Keyer interface {
-	ComputeSpecificationKey(spec []byte) (string, error)
-	ComputeUnitKey(unit []byte) (string, error)
+type Normalizer interface {
+	NormalizeSpecification(spec []byte) ([]byte, error)
+	NormalizeUnit(unit []byte) ([]byte, error)
 }
+
+type Factory func() Worker
