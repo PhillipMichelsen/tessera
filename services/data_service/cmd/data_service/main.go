@@ -2,20 +2,13 @@ package main
 
 import (
 	"log/slog"
-	"net"
 	"os"
 	"time"
 
 	"github.com/lmittmann/tint"
-	pb "gitlab.michelsen.id/phillmichelsen/tessera/pkg/pb/data_service"
 	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/manager"
-	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/provider/providers/binance/ws"
-	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/provider/providers/test"
 	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/router"
-	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/server"
 	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/worker"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/reflection"
 )
 
 func initLogger() *slog.Logger {
@@ -58,72 +51,8 @@ func main() {
 
 	// Setup
 	wr := worker.NewRegistry()
-
-	r := router.NewRouter(2048)
-	m := manager.NewManager(r, wr)
-
-	// Providers
-
-	testProvider := test.NewTestProvider(r.IncomingChannel(), time.Microsecond*100)
-	if err := m.AddProvider("test_provider", testProvider); err != nil {
-		slog.Error("add provider failed", "err", err)
-		os.Exit(1)
-	}
-
-	binanceFuturesWebsocket := ws.NewBinanceFuturesWebsocket(ws.Config{}, r.IncomingChannel())
-	if err := m.AddProvider("binance_futures", binanceFuturesWebsocket); err != nil {
-		slog.Error("add provider failed", "err", err)
-		os.Exit(1)
-	}
-
-	// gRPC Control Server
-	grpcControlServer := grpc.NewServer()
-	go func() {
-		pb.RegisterDataServiceControlServer(grpcControlServer, server.NewGRPCControlServer(m))
-		reflection.Register(grpcControlServer)
-		lis, err := net.Listen("tcp", ":50051")
-		if err != nil {
-			slog.Error("listen failed", "cmp", "grpc-control", "addr", ":50051", "err", err)
-			os.Exit(1)
-		}
-		slog.Info("listening", "cmp", "grpc-control", "addr", ":50051")
-		if err := grpcControlServer.Serve(lis); err != nil {
-			slog.Error("serve failed", "cmp", "grpc-control", "err", err)
-			os.Exit(1)
-		}
-	}()
-
-	// gRPC Streaming Server
-	grpcStreamingServer := grpc.NewServer()
-	go func() {
-		pb.RegisterDataServiceStreamingServer(grpcStreamingServer, server.NewGRPCStreamingServer(m))
-		reflection.Register(grpcStreamingServer)
-		lis, err := net.Listen("tcp", ":50052")
-		if err != nil {
-			slog.Error("listen failed", "cmp", "grpc-streaming", "addr", ":50052", "err", err)
-			os.Exit(1)
-		}
-		slog.Info("listening", "cmp", "grpc-streaming", "addr", ":50052")
-		if err := grpcStreamingServer.Serve(lis); err != nil {
-			slog.Error("serve failed", "cmp", "grpc-streaming", "err", err)
-			os.Exit(1)
-		}
-	}()
-
-	// Socket Streaming Server
-	socketStreamingServer := server.NewSocketStreamingServer(m)
-	go func() {
-		lis, err := net.Listen("tcp", ":50060")
-		if err != nil {
-			slog.Error("listen failed", "cmp", "socket-streaming", "addr", ":50060", "err", err)
-			os.Exit(1)
-		}
-		slog.Info("listening", "cmp", "socket-streaming", "addr", ":50060")
-		if err := socketStreamingServer.Serve(lis); err != nil {
-			slog.Error("serve failed", "cmp", "socket-streaming", "err", err)
-			os.Exit(1)
-		}
-	}()
+	r, _ := router.NewRouter("actor", 2048, 512)
+	_ = manager.NewManager(r, wr)
 
 	select {}
 }

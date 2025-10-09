@@ -79,7 +79,7 @@ func (p *actorPartition) loop() {
 			if !exists {
 				uniqueChannels := make(map[chan<- domain.Message]struct{})
 				for _, e := range p.rules {
-					if e.pattern.Satisfies(id) {
+					if e.pattern.Match(id) {
 						for ch := range e.channels {
 							uniqueChannels[ch] = struct{}{}
 						}
@@ -107,7 +107,7 @@ func (p *actorPartition) loop() {
 			}
 
 		case opRegister:
-			key := v.pattern.Canonical()
+			key := v.pattern.Key()
 			e, exists := p.rules[key]
 			if !exists {
 				e = &ruleEntry{pattern: v.pattern, channels: make(map[chan<- domain.Message]struct{})}
@@ -121,7 +121,7 @@ func (p *actorPartition) loop() {
 			e.channels[v.channel] = struct{}{}
 
 			for id, subs := range p.memo {
-				if v.pattern.Satisfies(id) && !slices.Contains(subs, v.channel) {
+				if v.pattern.Match(id) && !slices.Contains(subs, v.channel) {
 					p.memo[id] = append(subs, v.channel)
 				}
 			}
@@ -129,7 +129,7 @@ func (p *actorPartition) loop() {
 			v.done <- struct{}{}
 
 		case opDeregister:
-			key := v.pattern.Canonical()
+			key := v.pattern.Key()
 			e, ok := p.rules[key]
 			if !ok {
 				v.done <- struct{}{}
@@ -146,7 +146,7 @@ func (p *actorPartition) loop() {
 			}
 
 			for id, subs := range p.memo {
-				if v.pattern.Satisfies(id) {
+				if v.pattern.Match(id) {
 					for i := range subs {
 						if subs[i] == v.channel {
 							last := len(subs) - 1
