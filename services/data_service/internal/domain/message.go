@@ -1,7 +1,11 @@
-// Package domain contains all key domain types
+// Package domain
 package domain
 
+import "time"
+
 type Message struct {
-	Identifier Identifier
-	Payload    []byte
+	Payload   []byte
+	SchemaID  string
+	Seq       uint64
+	Timestamp time.Time
 }
