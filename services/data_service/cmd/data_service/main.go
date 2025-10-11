@@ -6,9 +6,6 @@ import (
 	"time"
 
 	"github.com/lmittmann/tint"
-	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/manager"
-	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/router"
-	"gitlab.michelsen.id/phillmichelsen/tessera/services/data_service/internal/worker"
 )
 
 func initLogger() *slog.Logger {
@@ -48,11 +45,6 @@ func env(k, def string) string {
 func main() {
 	slog.SetDefault(initLogger())
 	slog.Info("starting", "svc", "data-service")
-
-	// Setup
-	wr := worker.NewRegistry()
-	r, _ := router.NewRouter("actor", 2048, 512)
-	_ = manager.NewManager(r, wr)
 
 	select {}
 }

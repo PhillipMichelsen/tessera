@@ -1,0 +1,2 @@
+// Package single
+package single
