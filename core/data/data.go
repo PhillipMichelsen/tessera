@@ -4,15 +4,14 @@ package data
 import "time"
 
 type Envelope struct {
-	Source    string
-	Key       string
-	Timestamp time.Time
-	Sequence  uint64
-	Payload   []byte
+	Identifier string
+	Timestamp  time.Time
+	Sequence   uint64
+	Payload    []byte
 }
 
 type Source interface {
-	Start() error
+	Start(config any) error
 	Stop()
 	Name() string
 
@@ -23,19 +22,12 @@ type Source interface {
 	GetSubscriptions() []string
 }
 
-type Sink interface {
-	Start() error
-	Stop()
-
-	Publish(envelope Envelope) error
-}
-
 type Processor interface {
-	Start(context ProcessorContext) error
+	Start(config any, send chan<- Envelope, receive <-chan Envelope) error
 	Stop()
 }
 
-type ProcessorContext interface {
-	Send(inPort string, messsage Envelope) error
-	Receive(outPort string) Envelope
+type Sink interface {
+	Start(config any, receive <-chan Envelope) error
+	Stop()
 }
